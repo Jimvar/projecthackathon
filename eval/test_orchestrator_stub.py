@@ -182,6 +182,44 @@ def test_orchestrator_trims_history_to_max_turns():
     )
 
 
+def test_make_llm_client_factory_selects_provider(monkeypatch):
+    """The factory should pick Gemini by default and OpenAI when LLM_PROVIDER=openai."""
+    from llm_client import LLMClient, OpenAILLMClient, make_llm_client
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    assert isinstance(make_llm_client(), LLMClient)
+
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    assert isinstance(make_llm_client(), LLMClient)
+
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    client = make_llm_client()
+    assert isinstance(client, OpenAILLMClient)
+    assert client.provider == "openai"
+
+
+def test_openai_message_translation_roundtrip():
+    """Our internal message dicts should map cleanly into OpenAI's shape."""
+    from llm_client import _to_openai_messages
+
+    messages = [
+        {"role": "user", "text": "Hello"},
+        {"role": "model", "tool_calls": [{"name": "run_sql", "arguments": {"query": "SELECT 1"}}]},
+        {"role": "tool", "name": "run_sql", "response": {"columns": ["n"], "rows": [[1]]}},
+    ]
+    out = _to_openai_messages(messages, system_instruction="You are a co-pilot.")
+
+    assert out[0] == {"role": "system", "content": "You are a co-pilot."}
+    assert out[1] == {"role": "user", "content": "Hello"}
+    assert out[2]["role"] == "assistant"
+    assert out[2]["tool_calls"][0]["function"]["name"] == "run_sql"
+    assert out[3]["role"] == "tool"
+    assert "rows" in out[3]["content"]
+
+
 def test_orchestrator_writes_turn_log(tmp_path, monkeypatch):
     """Each run should append one JSON line to today's logs/ file."""
     import turn_log

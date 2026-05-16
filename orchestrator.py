@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from llm_client import LLMClient
+from llm_client import LLMClient, make_llm_client
 from mcp_tools import TOOL_REGISTRY, call_tool
 from turn_log import log_turn
 
@@ -95,7 +95,9 @@ class Orchestrator:
     """
 
     def __init__(self, client: LLMClient | None = None, *, write_log: bool = True) -> None:
-        self.client = client or LLMClient(
+        # The factory picks gemini vs openai from LLM_PROVIDER env var.
+        # Tests pass an explicit stub client; production passes nothing.
+        self.client = client or make_llm_client(
             tools=_tool_specs_for_gemini(),
             system_instruction=_system_prompt(),
         )

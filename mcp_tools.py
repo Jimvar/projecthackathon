@@ -20,9 +20,38 @@ from sql_safety import validate_sql
 
 ROW_CAP = 10_000  # absolute ceiling on rows returned to the LLM
 BYTE_CAP = 256_000  # rough cap on JSON-encoded payload bytes
+SQL_CACHE_MAX = 128  # most recent (source, sql) pairs to keep hot
 
 METRICS_PATH = Path(__file__).parent / "data" / "metrics_dictionary.md"
 SCHEMA_PATH = Path(__file__).parent / "data" / "schema.md"
+
+
+# (source, normalized_sql) → payload. Filled lazily by run_sql, bounded by an
+# LRU order list. Demo wins a lot from this — judges asking the same question
+# twice get an instant chart.
+_SQL_CACHE: dict[tuple[str, str], dict] = {}
+_SQL_CACHE_ORDER: list[tuple[str, str]] = []
+
+
+def _store_in_cache(key: tuple[str, str], payload: dict) -> None:
+    if key in _SQL_CACHE:
+        _SQL_CACHE_ORDER.remove(key)
+    _SQL_CACHE[key] = payload
+    _SQL_CACHE_ORDER.append(key)
+    while len(_SQL_CACHE_ORDER) > SQL_CACHE_MAX:
+        evicted = _SQL_CACHE_ORDER.pop(0)
+        _SQL_CACHE.pop(evicted, None)
+
+
+def clear_sql_cache() -> None:
+    """Clear the (source, sql) cache. Exposed for tests + the UI."""
+    _SQL_CACHE.clear()
+    _SQL_CACHE_ORDER.clear()
+
+
+def sql_cache_stats() -> dict[str, int]:
+    """Return basic stats for monitoring / the UI."""
+    return {"entries": len(_SQL_CACHE), "capacity": SQL_CACHE_MAX}
 
 
 # ---------------------------------------------------------------------- helpers
@@ -112,7 +141,8 @@ def run_sql(query: str) -> dict[str, Any]:
             "rows": [[...], ...],     # row_cap-capped
             "row_count": N,
             "truncated": bool,
-            "sql": "<normalized>"
+            "sql": "<normalized>",
+            "cached": bool            # true on cache hit (Phase 4)
         }
         or {"error": "..."}.
     """
@@ -121,6 +151,16 @@ def run_sql(query: str) -> dict[str, Any]:
         return {"error": v.reason, "sql": query}
 
     db = get_db()
+    cache_key = (db.source, v.normalized_sql)
+    cached = _SQL_CACHE.get(cache_key)
+    if cached is not None:
+        # Move to end (LRU).
+        _SQL_CACHE_ORDER.remove(cache_key)
+        _SQL_CACHE_ORDER.append(cache_key)
+        result = dict(cached)
+        result["cached"] = True
+        return result
+
     try:
         cur = db.execute(v.normalized_sql)
     except Exception as e:
@@ -140,6 +180,7 @@ def run_sql(query: str) -> dict[str, Any]:
         "row_count": len(safe_rows),
         "truncated": truncated,
         "sql": v.normalized_sql,
+        "cached": False,
     }
 
     encoded = json.dumps(payload, default=str)
@@ -152,6 +193,7 @@ def run_sql(query: str) -> dict[str, Any]:
         payload["row_count"] = len(safe_rows)
         payload["truncated"] = True
 
+    _store_in_cache(cache_key, payload)
     return payload
 
 

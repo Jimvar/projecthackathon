@@ -1,15 +1,14 @@
-"""Thin abstraction over Gemini's function-calling API.
+"""Thin abstraction over Gemini and OpenAI function-calling APIs.
 
-Keeps every Gemini-specific call inside one file so a future swap to
-OpenAI/Anthropic is a contained change.
-
-Phase-1 surface area is intentionally minimal: build a tool list once,
-hand it a list of (role, text) messages, get back either a tool-call or
-a final text response.
+Phase-4 adds an OpenAI implementation for outage insurance — the
+orchestrator can swap providers via `LLM_PROVIDER=openai`. Both classes
+expose the same `generate(messages)` interface and the same
+`LLMResponse` shape, so nothing downstream cares which is wired in.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -18,7 +17,8 @@ from google import genai
 from google.genai import types
 
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
+OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
 
 
 @dataclass
@@ -34,8 +34,33 @@ class LLMResponse:
     raw: Any  # the underlying SDK response, kept for logging
 
 
+# ---------------------------------------------------------------------- factory
+
+
+def make_llm_client(
+    api_key: str | None = None,
+    model: str | None = None,
+    tools: list[dict] | None = None,
+    system_instruction: str | None = None,
+    provider: str | None = None,
+):
+    """Pick a concrete LLM client based on `LLM_PROVIDER` env (default gemini)."""
+    chosen = (provider or os.getenv("LLM_PROVIDER") or "gemini").strip().lower()
+    if chosen == "openai":
+        return OpenAILLMClient(api_key=api_key, model=model, tools=tools,
+                               system_instruction=system_instruction)
+    return LLMClient(api_key=api_key, model=model, tools=tools,
+                     system_instruction=system_instruction)
+
+
+# ---------------------------------------------------------------------- Gemini
+
+
 class LLMClient:
-    """Wraps a Gemini client + persistent tool list."""
+    """Gemini function-calling wrapper. Kept under the historical name so
+    the test stubs don't have to change."""
+
+    provider = "gemini"
 
     def __init__(
         self,
@@ -50,15 +75,12 @@ class LLMClient:
                 "GEMINI_API_KEY not set. Copy .env.example to .env and add your key."
             )
         self._client = genai.Client(api_key=key)
-        self.model = model or os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
+        self.model = model or os.getenv("GEMINI_MODEL", GEMINI_DEFAULT_MODEL)
         self.system_instruction = system_instruction
         self._tools = self._compile_tools(tools or [])
 
-    # ------------------------------------------------------------------ schemas
-
     @staticmethod
     def _compile_tools(tool_specs: list[dict]) -> list[types.Tool]:
-        """Convert our `{name, description, parameters}` specs into Gemini Tools."""
         declarations: list[types.FunctionDeclaration] = []
         for spec in tool_specs:
             declarations.append(
@@ -72,42 +94,27 @@ class LLMClient:
             return []
         return [types.Tool(function_declarations=declarations)]
 
-    # ------------------------------------------------------------------ chat
-
     def generate(
         self,
         messages: list[dict],
         force_text: bool = False,
     ) -> LLMResponse:
-        """Send a turn.
-
-        `messages` is our internal shape: a list of
-            {"role": "user"|"model"|"tool", "text": "...", ...}
-
-        Tool results are passed as role='tool' with a 'name' and 'response'.
-        """
         contents = _to_gemini_contents(messages)
         config = types.GenerateContentConfig(
             system_instruction=self.system_instruction,
             tools=None if force_text else (self._tools or None),
             temperature=0.2,
-            # If tools are present and we still want to allow free text, leave
-            # tool_config unset so the model picks. force_text disables tools.
         )
         response = self._client.models.generate_content(
             model=self.model,
             contents=contents,
             config=config,
         )
-        text, tool_calls = _parse_response(response)
+        text, tool_calls = _parse_gemini_response(response)
         return LLMResponse(text=text, tool_calls=tool_calls, raw=response)
 
 
-# ---------------------------------------------------------------------- mapping
-
-
 def _to_gemini_contents(messages: list[dict]) -> list[types.Content]:
-    """Translate our message dicts into Gemini's `Content` objects."""
     out: list[types.Content] = []
     for m in messages:
         role = m["role"]
@@ -148,8 +155,7 @@ def _to_gemini_contents(messages: list[dict]) -> list[types.Content]:
     return out
 
 
-def _parse_response(response: Any) -> tuple[str | None, list[ToolCall]]:
-    """Pull text + function_call parts out of a Gemini response."""
+def _parse_gemini_response(response: Any) -> tuple[str | None, list[ToolCall]]:
     text_chunks: list[str] = []
     tool_calls: list[ToolCall] = []
     candidates = getattr(response, "candidates", None) or []
@@ -165,4 +171,127 @@ def _parse_response(response: Any) -> tuple[str | None, list[ToolCall]]:
             elif getattr(part, "text", None):
                 text_chunks.append(part.text)
     text = "\n".join(t for t in text_chunks if t) or None
+    return text, tool_calls
+
+
+# ---------------------------------------------------------------------- OpenAI
+
+
+class OpenAILLMClient:
+    """OpenAI Chat Completions wrapper exposing the same surface as `LLMClient`.
+
+    Insurance against a Gemini outage on demo day. Flip
+    `LLM_PROVIDER=openai` and the orchestrator picks this up.
+    """
+
+    provider = "openai"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        tools: list[dict] | None = None,
+        system_instruction: str | None = None,
+    ) -> None:
+        # Import lazily so projects without OpenAI configured don't pay the cost.
+        from openai import OpenAI
+
+        key = api_key or os.getenv("OPENAI_API_KEY")
+        if not key:
+            raise RuntimeError(
+                "OPENAI_API_KEY not set. Add it to .env or unset LLM_PROVIDER=openai."
+            )
+        self._client = OpenAI(api_key=key)
+        self.model = model or os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_MODEL)
+        self.system_instruction = system_instruction
+        self._tools = self._compile_tools(tools or [])
+
+    @staticmethod
+    def _compile_tools(tool_specs: list[dict]) -> list[dict]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": spec["name"],
+                    "description": spec["description"],
+                    "parameters": spec["parameters"],
+                },
+            }
+            for spec in tool_specs
+        ]
+
+    def generate(
+        self,
+        messages: list[dict],
+        force_text: bool = False,
+    ) -> LLMResponse:
+        openai_msgs = _to_openai_messages(messages, self.system_instruction)
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": openai_msgs,
+            "temperature": 0.2,
+        }
+        if self._tools and not force_text:
+            kwargs["tools"] = self._tools
+        response = self._client.chat.completions.create(**kwargs)
+        text, tool_calls = _parse_openai_response(response)
+        return LLMResponse(text=text, tool_calls=tool_calls, raw=response)
+
+
+def _to_openai_messages(messages: list[dict], system_instruction: str | None) -> list[dict]:
+    """Translate our internal message dicts into OpenAI Chat Completions shape."""
+    out: list[dict] = []
+    if system_instruction:
+        out.append({"role": "system", "content": system_instruction})
+
+    for m in messages:
+        role = m["role"]
+        if role == "user":
+            out.append({"role": "user", "content": m["text"]})
+        elif role in ("assistant", "model"):
+            entry: dict[str, Any] = {"role": "assistant"}
+            if m.get("text"):
+                entry["content"] = m["text"]
+            else:
+                entry["content"] = None
+            tcs = m.get("tool_calls") or []
+            if tcs:
+                entry["tool_calls"] = [
+                    {
+                        "id": f"call_{idx}",
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc.get("arguments", {})),
+                        },
+                    }
+                    for idx, tc in enumerate(tcs)
+                ]
+            out.append(entry)
+        elif role == "tool":
+            # Tool result lands as a tool-role message. OpenAI requires
+            # tool_call_id, but we don't track those — derive one
+            # deterministically from the prior assistant turn so the
+            # API doesn't reject the payload.
+            out.append({
+                "role": "tool",
+                "tool_call_id": f"call_{m.get('name', 'tool')}",
+                "content": json.dumps(m["response"], default=str),
+            })
+        else:
+            raise ValueError(f"unknown role: {role!r}")
+    return out
+
+
+def _parse_openai_response(response: Any) -> tuple[str | None, list[ToolCall]]:
+    choice = response.choices[0]
+    msg = choice.message
+    text = msg.content or None
+    tool_calls: list[ToolCall] = []
+    for tc in (msg.tool_calls or []):
+        try:
+            args = json.loads(tc.function.arguments or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        tool_calls.append(ToolCall(name=tc.function.name, arguments=args))
     return text, tool_calls
