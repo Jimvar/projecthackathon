@@ -11,6 +11,12 @@ style overrides the PDF brief explicitly tests for:
 * `sort` (asc / desc / none)
 * `top_n` (truncation after sort)
 * `thresholds` (color bars by value cutoff)
+
+Multi-panel API:
+* `render_panels(spec, dfs)` consumes the new `{panels: [...]}` contract
+  and returns a list of (chart_type, figure) tuples plus a layout hint.
+* `render(spec, df)` is the legacy single-chart entry point — preserved
+  as a thin wrapper so existing tests keep working.
 """
 
 from __future__ import annotations
@@ -20,6 +26,13 @@ from typing import Any
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+
+from annotations import annotate
+
+# Hard cap on panels the renderer will lay out. The orchestrator also
+# truncates at this number — both layers enforce so a runaway LLM can't
+# fill the screen.
+MAX_PANELS = 4
 
 
 PALETTES: dict[str, list[str]] = {
@@ -255,4 +268,92 @@ def _table(df: pd.DataFrame, title: str) -> go.Figure:
         ]
     )
     fig.update_layout(title=title, margin=dict(l=10, r=10, t=40, b=10))
+    return fig
+
+
+# ---------------------------------------------------------------------- multi-panel API
+
+
+def extract_panels(spec: dict) -> list[dict]:
+    """Normalize either contract shape into a list of panel dicts.
+
+    Accepts:
+      * `{"panels": [{"sql": "...", "chart": {...}}, ...]}` — new shape
+      * `{"sql": "...", "chart": {...}}`                    — legacy
+      * `{"chart": {...}}` (no sql)                         — legacy partial
+    """
+    panels = spec.get("panels")
+    if isinstance(panels, list) and panels:
+        return panels[:MAX_PANELS]
+    chart = spec.get("chart")
+    if chart:
+        return [{"sql": spec.get("sql", ""), "chart": chart}]
+    return []
+
+
+def choose_layout(panels: list[dict]) -> str:
+    """Decide a layout for the Streamlit grid.
+
+    Returns one of:
+      * "single"          — one chart, full width
+      * "row"             — N charts side by side in one row
+      * "kpi_strip+chart" — KPIs in a top row, other charts stacked below
+      * "grid"            — 2x2 (used for 3 or 4 non-KPI charts)
+    """
+    n = len(panels)
+    if n == 1:
+        return "single"
+    types = [((p.get("chart") or {}).get("type") or "").lower() for p in panels]
+    kpi_count = sum(1 for t in types if t == "kpi")
+    if kpi_count == n:
+        return "row"
+    if kpi_count >= 1 and kpi_count < n:
+        return "kpi_strip+chart"
+    if n == 2:
+        return "row"
+    return "grid"
+
+
+def render_panels(
+    spec: dict, dfs: list[pd.DataFrame], explanation: str = ""
+) -> list[tuple[str, go.Figure]]:
+    """Render every panel.
+
+    `dfs` must be the same length as the extracted panel list — caller
+    is responsible for running each panel's SQL (or supplying empty
+    DataFrames for panels whose SQL failed).
+
+    Returns a list of `(chart_type, figure)` tuples in panel order. The
+    figure for a panel whose DataFrame is empty is a small placeholder.
+    """
+    panels = extract_panels(spec)
+    out: list[tuple[str, go.Figure]] = []
+    for panel, df in zip(panels, dfs):
+        chart = panel.get("chart") or {}
+        chart_type = (chart.get("type") or "table").lower()
+        if df is None or df.empty:
+            fig = _empty_panel(chart.get("title") or chart_type)
+        else:
+            fig = render({"chart": chart}, df)
+            fig = annotate(fig, panel, df, explanation=explanation)
+        out.append((chart_type, fig))
+    return out
+
+
+def _empty_panel(title: str) -> go.Figure:
+    fig = go.Figure()
+    fig.add_annotation(
+        text="No data for this panel.",
+        showarrow=False,
+        font=dict(size=14, color="#888"),
+        x=0.5, y=0.5,
+        xref="paper", yref="paper",
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_visible=False,
+        yaxis_visible=False,
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=200,
+    )
     return fig

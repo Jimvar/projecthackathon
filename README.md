@@ -296,6 +296,35 @@ platform secrets — never in the image.
   `scripts/smoke.py` and `scripts/preflight.py`.
 - 16 new tests covering all the fixes above. **47/47 passing.**
 
+### Phase 6 — Holistic multi-panel answers & auto-annotations
+- **Multi-panel answers.** The chart contract now accepts a `panels` list
+  alongside the legacy `{sql, chart}` shape. Questions like
+  *"How is the bot doing this week?"* return a 3-KPI strip plus a daily
+  trend laid out together rather than a single chart.
+- **Hard cap of 4 panels** per turn; both the orchestrator and the
+  renderer enforce. `choose_layout()` picks `single` / `row` /
+  `kpi_strip+chart` / `grid` based on the panel mix.
+- **`annotations.py`** post-processes every rendered figure (LLM
+  unaware) with three rules:
+  - **Mean line** on bar / line / area charts with a single numeric y.
+  - **Release marker** (vertical dashed line) at the v2.3.0 release date —
+    the date is derived from the data once on first call.
+  - **Outlier highlights** (>1.5σ markers) on line charts when the
+    explanation contains an anomaly keyword in English or Greek.
+  - Opt-out per panel via `chart.style.annotations = false`.
+- **System prompt** has a new "When to compose a panel" section listing
+  exactly which question shapes warrant a panel (overview / health /
+  comparison / anomaly hunt). A new few-shot demonstrates the
+  brief's *"How is the bot doing this week?"* panel composition.
+- **Streamlit app** lays out panels through `st.columns` per the
+  layout hint, caches all figures per turn, and shows a "Show SQL"
+  expander that lists every panel's query.
+- **`eval_grading.tag_turn`** collapses across panels — `pass` if every
+  panel renders, `partial` if some fail, `fail` if all do.
+- **Backward compatible.** Every existing single-chart question + every
+  existing eval question keeps working unchanged. 22 new tests for the
+  panel API, layouts, and three annotation rules. **69/69 passing.**
+
 ## Hard rules honored
 
 - The dataset is never modified (read-only DuckDB; helper views are `TEMP`).

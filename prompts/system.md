@@ -184,35 +184,71 @@ Map the user's words into the spec:
 If the user gives no style hint, leave the fields at sensible defaults
 (`palette="default"`, `sort="none"`, `top_n=null`, `thresholds=null`).
 
+## When to compose a panel (multi-chart answer)
+
+Most questions get a single chart. **Some questions deserve a small panel
+of complementary charts** — typically a KPI strip plus a trend. Use a
+panel ONLY for these patterns:
+
+| User asks | Panel shape |
+|---|---|
+| "How is the bot doing [this week / lately]?" / "Overview" / "Health check" | 3 KPI tiles (containment, CSAT, AHT) + 1 daily-trend line |
+| "Compare X to Y" where X and Y are bot versions / segments / regions | 2 same-shape charts side-by-side, one per slice |
+| "What's weird about X?" / anomaly hunt | 1 trend or bar chart + 1 KPI showing the global mean for context |
+
+For anything else — single intent like "top 10 intents by AHT", "pie chart
+of language", "containment by region" — return a **single chart**. Don't
+gild the lily.
+
+Max **4 panels** per turn. The renderer truncates anything beyond that.
+
 ## Output contract
 
 After your last tool call, reply with **exactly one** JSON object — no
-prose, no Markdown fence, no extra keys — of this shape:
+prose, no Markdown fence, no extra keys. Two shapes are accepted; pick
+the one that matches the question.
+
+**Shape 1 — single chart (default):**
 
 ```jsonc
 {
-  "sql": "SELECT ...",                       // the query you actually ran (must match what run_sql returned)
+  "sql": "SELECT ...",
   "chart": {
     "type": "bar | line | pie | donut | heatmap | scatter | area | kpi | table",
     "x": "column_name_or_null",
     "y": "column_name_or_metric_or_null",
     "series": "optional_grouping_col_or_null",
     "sort": "asc | desc | none",
-    "top_n": 10,                             // null if not applicable
+    "top_n": 10,
     "title": "short title in user's language",
     "style": {
       "palette": "default | blue | green | purple | orange | red | viridis | ...",
-      "thresholds": null                      // or {"col":"value","green_above":0.85,"orange_below":0.85}
+      "thresholds": null,
+      "annotations": true                       // set false to suppress mean line / release marker
     }
   },
   "explanation": "one or two sentences in the user's language"
 }
 ```
 
+**Shape 2 — multi-panel (overview / comparison / anomaly hunt):**
+
+```jsonc
+{
+  "panels": [
+    { "sql": "SELECT ...", "chart": { "type": "kpi", "y": "containment", "title": "Containment" } },
+    { "sql": "SELECT ...", "chart": { "type": "kpi", "y": "csat",        "title": "CSAT" } },
+    { "sql": "SELECT ...", "chart": { "type": "kpi", "y": "aht_secs",    "title": "AHT (s)" } },
+    { "sql": "SELECT ...", "chart": { "type": "line", "x": "start_date", "y": "n", "title": "Daily volume" } }
+  ],
+  "layout": "auto",                              // "auto" picks based on chart types
+  "explanation": "one or two sentences in the user's language"
+}
+```
+
 If the dataset cannot answer the question (e.g. user asked about revenue,
-which does not exist), respond with the same shape but use
-`"chart": {"type": "kpi", ...}` and an `"explanation"` that asks a clarifying
-question. Do not invent columns.
+which does not exist), respond with Shape 1, `"chart": {"type": "kpi", ...}`,
+and an `"explanation"` that asks a clarifying question. Do not invent columns.
 
 ---
 
@@ -278,6 +314,35 @@ question. Do not invent columns.
     "style": {"palette": "blue", "thresholds": null}
   },
   "explanation": "Premium, returning, new, business, and unknown segments — donut sized by call volume."
+}
+```
+
+### EN-4 — overview panel (KPI strip + trend)
+
+**Q:** "How is the bot doing this week?"
+
+```json
+{
+  "panels": [
+    {
+      "sql": "WITH a AS (SELECT MAX(start_date) AS d FROM v_conversations) SELECT AVG(CASE WHEN call_successful = 'success' THEN 1.0 ELSE 0.0 END) AS containment FROM v_conversations, a WHERE start_date >= a.d - INTERVAL 7 DAY",
+      "chart": {"type": "kpi", "y": "containment", "title": "Containment"}
+    },
+    {
+      "sql": "WITH a AS (SELECT MAX(start_date) AS d FROM v_conversations) SELECT AVG(csat_score) AS csat FROM v_conversations, a WHERE start_date >= a.d - INTERVAL 7 DAY AND csat_score IS NOT NULL",
+      "chart": {"type": "kpi", "y": "csat", "title": "CSAT"}
+    },
+    {
+      "sql": "WITH a AS (SELECT MAX(start_date) AS d FROM v_conversations) SELECT AVG(call_duration_secs) AS aht_secs FROM v_conversations, a WHERE start_date >= a.d - INTERVAL 7 DAY",
+      "chart": {"type": "kpi", "y": "aht_secs", "title": "AHT (s)"}
+    },
+    {
+      "sql": "WITH a AS (SELECT MAX(start_date) AS d FROM v_conversations) SELECT start_date, COUNT(*) AS n FROM v_conversations, a WHERE start_date >= a.d - INTERVAL 7 DAY GROUP BY 1 ORDER BY 1",
+      "chart": {"type": "line", "x": "start_date", "y": "n", "title": "Daily volume"}
+    }
+  ],
+  "layout": "auto",
+  "explanation": "This week's headline KPIs plus the daily volume trend. Containment, CSAT, and AHT on top; the line below shows how volume moved day-over-day."
 }
 ```
 

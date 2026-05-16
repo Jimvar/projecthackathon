@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from db import get_db
 from mcp_tools import call_tool, clear_sql_cache, sql_cache_stats
 from orchestrator import Orchestrator
-from renderer import render
+from renderer import choose_layout, render_panels
 
 load_dotenv()
 
@@ -158,42 +158,123 @@ def _scope_bar() -> None:
 # ---------------------------------------------------------------------- replay + render helpers
 
 
+def _normalize_panels(turn: dict) -> list[dict]:
+    """Return the turn's panel list, falling back to the legacy single-chart shape."""
+    panels = turn.get("panels")
+    if panels:
+        return panels
+    chart = turn.get("chart") or {}
+    sql = turn.get("sql") or ""
+    if chart:
+        return [{"sql": sql, "chart": chart}]
+    return []
+
+
+def _prepare_panel_figures(turn: dict) -> list[tuple[str, object, str]]:
+    """Run each panel's SQL and build its figure once per turn.
+
+    Returns ``[(chart_type, fig_or_None, err_or_empty), ...]``. Results
+    are cached on the turn dict so Streamlit re-renders don't re-do the
+    SQL or rebuild the Plotly figure.
+    """
+    if "_panel_figs" in turn:
+        return turn["_panel_figs"]
+
+    panels = _normalize_panels(turn)
+    spec = {"panels": panels, "explanation": turn.get("explanation", "")}
+    dfs: list[pd.DataFrame] = []
+    errs: list[str] = []
+    for panel in panels:
+        df, err = _df_from_sql(panel.get("sql", ""))
+        dfs.append(df)
+        errs.append(err or "")
+
+    rendered = render_panels(
+        spec, dfs, explanation=turn.get("explanation", "")
+    )
+    out: list[tuple[str, object, str]] = [
+        (chart_type, fig, err)
+        for (chart_type, fig), err in zip(rendered, errs)
+    ]
+    turn["_panel_figs"] = out
+    return out
+
+
+def _lay_out_panels(turn: dict, panel_figs: list[tuple[str, object, str]]) -> None:
+    """Place panel figures on screen per the chosen layout."""
+    panels = _normalize_panels(turn)
+    layout = turn.get("layout") or "auto"
+    if layout == "auto":
+        layout = choose_layout(panels)
+
+    def _render(idx: int) -> None:
+        chart_type, fig, err = panel_figs[idx]
+        if err:
+            st.warning(f"Panel {idx + 1}: {err}")
+        elif fig is None:
+            st.info("No data.")
+        else:
+            st.plotly_chart(fig, use_container_width=True)
+
+    n = len(panel_figs)
+    if n == 0:
+        return
+    if layout == "single" or n == 1:
+        _render(0)
+        return
+    if layout == "row":
+        cols = st.columns(n)
+        for col, i in zip(cols, range(n)):
+            with col:
+                _render(i)
+        return
+    if layout == "kpi_strip+chart":
+        kpi_idx = [i for i, (t, _, _) in enumerate(panel_figs) if t == "kpi"]
+        rest_idx = [i for i in range(n) if i not in kpi_idx]
+        if kpi_idx:
+            cols = st.columns(len(kpi_idx))
+            for col, i in zip(cols, kpi_idx):
+                with col:
+                    _render(i)
+        for i in rest_idx:
+            _render(i)
+        return
+    # "grid" — pairs per row.
+    for start in range(0, n, 2):
+        cols = st.columns(2)
+        for col, i in zip(cols, range(start, min(start + 2, n))):
+            with col:
+                _render(i)
+
+
 def _render_assistant_turn(turn: dict) -> None:
     if turn.get("error"):
         st.error(turn["error"])
     if turn.get("explanation"):
         st.markdown(turn["explanation"])
-    chart = turn.get("chart") or {}
-    sql = turn.get("sql") or ""
-    if chart and sql:
-        # Build the figure once per turn and stash it on the turn dict
-        # so subsequent re-renders (Streamlit reruns on every input)
-        # don't re-execute the SQL and re-build the Plotly figure.
-        fig = turn.get("_fig")
-        err = turn.get("_err")
-        if fig is None and err is None:
-            df, err = _df_from_sql(sql)
-            if err is None and not df.empty:
-                fig = render({"chart": chart}, df)
-            turn["_fig"] = fig
-            turn["_err"] = err
-        if err:
-            st.warning(f"Could not render this chart: {err}")
-        elif fig is None:
-            st.info("Query returned no rows.")
-        else:
-            st.plotly_chart(fig, use_container_width=True)
-    if sql:
-        with st.expander("Show SQL"):
-            st.code(sql, language="sql")
+
+    panels = _normalize_panels(turn)
+    if panels:
+        panel_figs = _prepare_panel_figures(turn)
+        _lay_out_panels(turn, panel_figs)
+
+    # Show SQL — every panel's query, separated by a blank line.
+    sqls = [p.get("sql", "") for p in panels if p.get("sql")]
+    if sqls:
+        with st.expander(f"Show SQL ({len(sqls)} {'query' if len(sqls) == 1 else 'queries'})"):
+            for i, sql in enumerate(sqls, 1):
+                if len(sqls) > 1:
+                    st.caption(f"Panel {i}")
+                st.code(sql, language="sql")
+
     # Copy-as-markdown panel: turns the answer + SQL into one
     # paste-ready block for sharing on Slack / a ticket / a PR.
-    if turn.get("explanation") or sql:
+    if turn.get("explanation") or sqls:
         with st.expander("Copy as Markdown"):
             md_parts: list[str] = []
             if turn.get("explanation"):
                 md_parts.append(turn["explanation"])
-            if sql:
+            for sql in sqls:
                 md_parts.append(f"```sql\n{sql.strip()}\n```")
             st.code("\n\n".join(md_parts), language="markdown")
 
@@ -261,8 +342,12 @@ def main() -> None:
             "role": "assistant",
             "text": turnlog.explanation,
             "explanation": turnlog.explanation,
+            # Back-compat fields used elsewhere (logging, replay of older turns).
             "sql": turnlog.sql,
             "chart": turnlog.chart_spec or {},
+            # The full panel set (1 panel = single chart, up to MAX_PANELS).
+            "panels": turnlog.panels,
+            "layout": turnlog.layout,
             "error": turnlog.error,
         }
         _render_assistant_turn(turn)
