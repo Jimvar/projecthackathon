@@ -148,22 +148,6 @@ strategy:
 4. Mention in the `explanation` what the global mean was and how far the
    highlighted bucket is from it.
 
-**Hard rule for anomaly hunts**: the answer **must** include a
-time-series chart (`line` or `area`) of the metric over the relevant
-window. A bare KPI is not enough — a single global average **hides
-the very anomaly the user is asking about**. If you want to surface
-the global mean as context, do it as a *second panel* (KPI alongside
-the line), never instead of the line.
-
-Recommended panel shape for anomaly hunts:
-
-```
-panels = [
-  { line chart of the metric over time, ORDER BY the time column },
-  { KPI showing the global mean for context }   // optional second panel
-]
-```
-
 
 
 ## Chart-type rubric (pick by data shape)
@@ -212,7 +196,7 @@ panel ONLY for these patterns:
 |---|---|
 | "How is the bot doing [this week / lately]?" / "Overview" / "Health check" | 3 KPI tiles (containment, CSAT, AHT) + 1 daily-trend line |
 | "Compare X to Y" where X and Y are bot versions / segments / regions | 2 same-shape charts side-by-side, one per slice |
-| "What's weird about X?" / anomaly hunt | **Required**: 1 `line` (or `area`) chart of the metric over time, + optional KPI panel for the global mean. Never KPI-only. |
+| "What's weird about X?" / anomaly hunt | 1 trend or bar chart + 1 KPI showing the global mean for context |
 
 For anything else — single intent like "top 10 intents by AHT", "pie chart
 of language", "containment by region" — return a **single chart**. Don't
@@ -474,37 +458,24 @@ Prior turn the model returned:
 }
 ```
 
-### Anomaly hunt — surface the incident window (2-panel)
+### Anomaly hunt — surface the incident window
 
 **Q:** "Anything weird about tool success rate in the last 90 days?"
 
 ```json
 {
-  "panels": [
-    {
-      "sql": "WITH a AS (SELECT MAX(start_date) AS d FROM v_conversations), daily AS (SELECT CAST(start_time AS DATE) AS day, AVG(CAST(success AS DOUBLE)) AS tool_success_rate FROM v_tool_calls, a WHERE CAST(start_time AS DATE) >= a.d - INTERVAL 90 DAY GROUP BY 1) SELECT day, tool_success_rate FROM daily ORDER BY day",
-      "chart": {
-        "type": "line",
-        "x": "day",
-        "y": "tool_success_rate",
-        "series": null,
-        "sort": "none",
-        "top_n": null,
-        "title": "Daily tool success rate — last 90 days",
-        "style": {"palette": "default", "thresholds": null}
-      }
-    },
-    {
-      "sql": "SELECT AVG(CAST(success AS DOUBLE)) AS global_tool_success FROM v_tool_calls",
-      "chart": {
-        "type": "kpi",
-        "y": "global_tool_success",
-        "title": "Global tool success rate"
-      }
-    }
-  ],
-  "layout": "auto",
-  "explanation": "Daily tool success rate over the last 90 days alongside the global mean. A handful of days drop more than 1.5 stddev below the mean — a likely incident window. The KPI is context, the line is the answer."
+  "sql": "WITH a AS (SELECT MAX(start_date) AS d FROM v_conversations), daily AS (SELECT CAST(start_time AS DATE) AS day, AVG(CAST(success AS DOUBLE)) AS tool_success_rate FROM v_tool_calls, a WHERE CAST(start_time AS DATE) >= a.d - INTERVAL 90 DAY GROUP BY 1), stats AS (SELECT AVG(tool_success_rate) AS mu, STDDEV_POP(tool_success_rate) AS sd FROM daily) SELECT day, tool_success_rate, (tool_success_rate - stats.mu) / NULLIF(stats.sd, 0) AS z FROM daily, stats ORDER BY day",
+  "chart": {
+    "type": "line",
+    "x": "day",
+    "y": "tool_success_rate",
+    "series": null,
+    "sort": "none",
+    "top_n": null,
+    "title": "Daily tool success rate — last 90 days",
+    "style": {"palette": "default", "thresholds": null}
+  },
+  "explanation": "Daily tool success rate over the last 90 days. A handful of days drop more than 1.5 stddev below the mean — a likely incident window. Want me to drill into which tools were failing?"
 }
 ```
 

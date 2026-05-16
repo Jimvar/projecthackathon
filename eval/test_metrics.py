@@ -310,59 +310,6 @@ def test_pivot_in_lists_cover_dataset(db, view, source_view, column):
     )
 
 
-# ---------------------------------------------------------------------- anomaly-hunt prompt guards
-
-def test_anomaly_hunt_section_requires_time_series():
-    """Regression guard: the anomaly-hunt section must tell the model
-    that a time-series chart is required and a bare KPI is not enough.
-    Otherwise the LLM regresses and returns a KPI-only answer to
-    "what's weird about X?" — which hides the very anomaly the
-    user is asking about.
-    """
-    prompt = (ROOT / "prompts" / "system.md").read_text()
-    # Find the anomaly-hunt section body.
-    sections = prompt.split("## ")
-    anomaly_sections = [s for s in sections if s.startswith("Anomaly-hunt")]
-    assert anomaly_sections, "no Anomaly-hunt section found in system.md"
-    body = anomaly_sections[0].lower()
-    # The section must mention that a time-series / line chart is required
-    # and call out that a bare KPI is insufficient.
-    must_contain = ["time-series", "line", "kpi"]
-    for needle in must_contain:
-        assert needle in body, (
-            f"Anomaly-hunt section is missing the keyword {needle!r}. "
-            "Without this, the LLM regresses to KPI-only answers."
-        )
-
-
-def test_anomaly_hunt_fewshot_is_multi_panel():
-    """The anomaly-hunt few-shot is the model's primary reference for
-    the shape of an anomaly-hunt answer. It must demonstrate a
-    multi-panel response — a single-chart line would let the model
-    drift toward single-chart KPIs."""
-    prompt = (ROOT / "prompts" / "system.md").read_text()
-    # Pull the anomaly-hunt example by header.
-    anchor = "### Anomaly hunt"
-    idx = prompt.find(anchor)
-    assert idx >= 0, "anomaly-hunt few-shot header missing from system.md"
-    # The example ends at the next top-level or third-level heading.
-    rest = prompt[idx:]
-    end = min(
-        (rest.find("\n## ", 1) if rest.find("\n## ", 1) != -1 else len(rest)),
-        (rest.find("\n### ", 1) if rest.find("\n### ", 1) != -1 else len(rest)),
-    )
-    snippet = rest[:end].lower()
-    assert '"panels"' in snippet, (
-        "anomaly-hunt few-shot must be a multi-panel response — see "
-        "the 'Anomaly-hunt mode' rule. Single-chart examples teach the "
-        "LLM the wrong pattern."
-    )
-    # And the panels must include a line chart (the trend over time).
-    assert '"type": "line"' in snippet, (
-        "anomaly-hunt few-shot must include a line panel."
-    )
-
-
 # ---------------------------------------------------------------------- metric formula consistency
 
 def test_metric_formulas_match_dictionary():
