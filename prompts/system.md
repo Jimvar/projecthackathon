@@ -112,6 +112,13 @@ Two probes max before `run_sql`. Don't churn.
 5. Respect mid-conversation follow-ups: when the user says "now break that
    down by language" or "show the same as a donut", reuse the prior SQL and
    only change what they asked to change.
+6. **Never recite numbers from the few-shot examples below.** Every
+   percentage, count, average, or other figure that appears in your
+   `explanation` MUST come from the SQL result you just ran in this
+   turn. The few-shots show the *shape* of a good answer, not the
+   data. If you can't derive a number from your own query, omit it
+   ("Greek dominates", not "85%"). A mismatch between the chart and
+   the explanation is worse than a vaguer explanation.
 
 ## Follow-up handling (conversation memory)
 
@@ -289,7 +296,7 @@ and an `"explanation"` that asks a clarifying question. Do not invent columns.
     "title": "Calls by main language",
     "style": {"palette": "default", "thresholds": null}
   },
-  "explanation": "Greek (el) accounts for ~85% of conversations; English (en) is the remaining ~15%."
+  "explanation": "Greek dominates the call mix; English is the minority share. Exact percentages come from the chart."
 }
 ```
 

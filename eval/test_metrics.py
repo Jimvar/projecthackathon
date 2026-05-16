@@ -310,6 +310,61 @@ def test_pivot_in_lists_cover_dataset(db, view, source_view, column):
     )
 
 
+# ---------------------------------------------------------------------- few-shot leakage guards
+
+def test_few_shot_explanations_have_no_baked_in_percentages():
+    """Regression guard: the few-shot explanations must not contain
+    specific percentages or counts pulled from the dataset.
+
+    The model parrots the few-shot's explanation verbatim when the
+    user's question matches the few-shot's question closely. We hit
+    this with EN-1: the prompt said "~85% / ~15%" but the actual
+    split is 76.94% / 23.06%, so the chart and the explanation
+    disagreed. Strip specific numbers from few-shot prose to prevent
+    recurrence.
+    """
+    import re as _re
+    prompt = (ROOT / "prompts" / "system.md").read_text()
+    # Pull every "explanation": "..." string from the few-shots block.
+    explanations = _re.findall(r'"explanation"\s*:\s*"([^"]+)"', prompt)
+    # Skip placeholder text from the output-contract template.
+    explanations = [
+        e for e in explanations
+        if "one or two sentences" not in e
+    ]
+    # Anything that looks like a percentage in prose is suspicious —
+    # numeric thresholds belong in the chart spec, not the explanation.
+    # We allow methodology references like "1.5 stddev" because those
+    # describe the analysis, not a data value. We also allow "≥85%" /
+    # "<85%" since those describe the threshold-color rule, not the
+    # observed data.
+    pct = _re.compile(r"(~|approximately\s*|about\s*)\d+(\.\d+)?%")
+    offenders = [e for e in explanations if pct.search(e)]
+    assert not offenders, (
+        "Few-shot explanations contain baked-in approximate percentages "
+        "that the LLM will parrot verbatim:\n"
+        + "\n".join(f"  - {o}" for o in offenders)
+        + "\nRewrite to qualitative phrasing ('dominates', 'minority share')."
+    )
+
+
+def test_how_to_work_warns_against_reciting_numbers():
+    """The 'How to work' section must explicitly tell the model not to
+    recite numbers from the few-shots. Without this, the model treats
+    the few-shots as a template and copies their figures."""
+    prompt = (ROOT / "prompts" / "system.md").read_text()
+    # The exact phrasing isn't load-bearing, but the rule must be there.
+    rule_keywords = ["recite", "few-shot", "SQL result"]
+    section = prompt.split("## How to work", 1)
+    assert len(section) == 2, "'How to work' section missing from system.md"
+    body = section[1].split("\n## ", 1)[0].lower()
+    for kw in rule_keywords:
+        assert kw.lower() in body, (
+            f"'How to work' is missing the keyword {kw!r}. Without an "
+            "explicit warning, the model will parrot few-shot figures."
+        )
+
+
 # ---------------------------------------------------------------------- anomaly-hunt prompt guards
 
 def test_anomaly_hunt_section_requires_time_series():
