@@ -1,0 +1,93 @@
+# Golden expected values for 10 of the eval questions.
+#
+# `sql` is run directly against the read-only DuckDB connection in
+# eval/test_metrics.py to produce a reference answer.
+# `expect_scalar` and `expect_rows` are alternative assertions:
+#   - expect_scalar: a single numeric the query must return (rounded to 4 dp)
+#   - expect_rows: a list-of-lists the query must return (exact match)
+#
+# Tolerance: 1e-4 for scalars, exact equality for row sets.
+
+- id: q01_pie_languages
+  sql: |
+    SELECT main_language, COUNT(*) AS n
+    FROM v_conversations
+    GROUP BY 1
+    ORDER BY n DESC
+  expect_rows:
+    - ["el", 7694]
+    - ["en", 2306]
+
+- id: q04_outcome_breakdown
+  sql: |
+    SELECT outcome, COUNT(*) AS n
+    FROM v_conversations
+    GROUP BY 1
+    ORDER BY n DESC
+
+- id: containment_rate_overall
+  sql: |
+    SELECT
+      AVG(CASE WHEN call_successful = 'success' THEN 1.0 ELSE 0.0 END) AS containment_rate
+    FROM v_conversations
+  expect_scalar_min: 0.30
+  expect_scalar_max: 0.95
+
+- id: escalation_rate_overall
+  sql: |
+    SELECT
+      AVG(CASE WHEN call_successful = 'unknown' THEN 1.0 ELSE 0.0 END) AS escalation_rate
+    FROM v_conversations
+  expect_scalar_min: 0.0
+  expect_scalar_max: 0.5
+
+- id: csat_overall
+  sql: |
+    SELECT AVG(csat_score) AS csat
+    FROM v_conversations
+    WHERE csat_score IS NOT NULL
+  expect_scalar_min: 1.0
+  expect_scalar_max: 5.0
+
+- id: csat_response_rate
+  sql: |
+    SELECT
+      AVG(CASE WHEN csat_score IS NOT NULL THEN 1.0 ELSE 0.0 END) AS csat_response_rate
+    FROM v_conversations
+  expect_scalar_min: 0.15
+  expect_scalar_max: 0.45
+
+- id: aht_secs_overall
+  sql: |
+    SELECT AVG(call_duration_secs) AS aht
+    FROM v_conversations
+  expect_scalar_min: 10.0
+  expect_scalar_max: 600.0
+
+- id: cost_per_resolved
+  sql: |
+    SELECT
+      SUM(cost_amount) / NULLIF(COUNT(*) FILTER (WHERE call_successful = 'success'), 0)
+      AS cost_per_resolved
+    FROM v_conversations
+  expect_scalar_min: 0.0
+  expect_scalar_max: 100.0
+
+- id: abandonment_rate
+  sql: |
+    SELECT
+      AVG(CASE WHEN termination_reason = 'caller_hung_up' THEN 1.0 ELSE 0.0 END) AS abandonment_rate
+    FROM v_conversations
+  expect_scalar_min: 0.0
+  expect_scalar_max: 0.5
+
+- id: deflection_equals_1_minus_escalation
+  sql: |
+    WITH r AS (
+      SELECT
+        AVG(CASE WHEN call_successful = 'unknown' THEN 1.0 ELSE 0.0 END) AS escalation_rate
+      FROM v_conversations
+    )
+    SELECT (1.0 - escalation_rate) AS deflection_rate FROM r
+  expect_scalar_min: 0.5
+  expect_scalar_max: 1.0

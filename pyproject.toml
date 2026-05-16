@@ -1,0 +1,23 @@
+[project]
+name = "nr2dashboard"
+version = "0.1.0"
+description = "Natural-language → dashboard over the SmartRep voicebot dataset"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+dependencies = [
+    "duckdb>=1.0.0",
+    "streamlit>=1.36",
+    "plotly>=5.22",
+    "pandas>=2.2",
+    "python-dotenv>=1.0",
+    "sqlglot>=25.0",
+    "google-genai>=0.3",
+    "pyyaml>=6.0",
+    "mcp>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
