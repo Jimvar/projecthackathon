@@ -3,7 +3,7 @@ name = "nr2dashboard"
 version = "0.1.0"
 description = "Natural-language → dashboard over the SmartRep voicebot dataset"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = { file = "LICENSE" }
 dependencies = [
     "duckdb>=1.0.0",
@@ -21,4 +21,26 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# This is a Streamlit app, not a library. Setuptools auto-discovery would
+# pick up `data/`, `eval/`, `prompts/` as packages, so we disable it and
+# list our top-level modules explicitly. `packages = []` is required —
+# `py-modules` alone doesn't turn off package discovery.
+packages = []
+py-modules = [
+    "app",
+    "db",
+    "llm_client",
+    "mcp_server",
+    "mcp_tools",
+    "orchestrator",
+    "renderer",
+    "sql_safety",
+    "turn_log",
 ]

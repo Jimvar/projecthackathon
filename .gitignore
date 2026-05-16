@@ -7,3 +7,6 @@ __pycache__/
 .env.local
 logs/*.jsonl
 .DS_Store
+*.egg-info/
+build/
+dist/
