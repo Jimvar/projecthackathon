@@ -326,3 +326,79 @@ def test_tag_turn_partial_when_one_panel_bad():
     )
     status, reason = tag_turn(log)
     assert status == "partial", (status, reason)
+
+
+# ---------------------------------------------------------------------- line/area: don't re-sort by y
+
+
+def test_line_chart_preserves_row_order_when_sort_asc():
+    """A line chart with `sort: asc` must NOT reorder points by y —
+    that scrambles the line into spaghetti. Time-series charts trust
+    the SQL's ORDER BY for the x-axis order."""
+    df = pd.DataFrame({
+        "d": ["Apr 3", "Apr 4", "Apr 5", "Apr 6", "Apr 7"],
+        "n": [18, 5, 12, 1, 20],   # NOT in y-order; should stay this way
+    })
+    fig = render(
+        {"chart": {"type": "line", "x": "d", "y": "n", "sort": "asc"}},
+        df,
+    )
+    # The first scatter trace is the data line; its x array must be in
+    # the original date order, not reshuffled by y.
+    line_trace = next(t for t in fig.data if t.type == "scatter")
+    assert list(line_trace.x) == ["Apr 3", "Apr 4", "Apr 5", "Apr 6", "Apr 7"]
+    assert list(line_trace.y) == [18, 5, 12, 1, 20]
+
+
+def test_area_chart_preserves_row_order_when_sort_asc():
+    df = pd.DataFrame({
+        "d": ["Apr 3", "Apr 4", "Apr 5"],
+        "n": [18, 5, 12],
+    })
+    fig = render(
+        {"chart": {"type": "area", "x": "d", "y": "n", "sort": "asc"}},
+        df,
+    )
+    trace = next(t for t in fig.data if t.type == "scatter")
+    assert list(trace.x) == ["Apr 3", "Apr 4", "Apr 5"]
+    assert list(trace.y) == [18, 5, 12]
+
+
+def test_scatter_preserves_row_order_when_sort_desc():
+    df = pd.DataFrame({"x": [1, 2, 3, 4], "y": [40, 10, 30, 20]})
+    fig = render(
+        {"chart": {"type": "scatter", "x": "x", "y": "y", "sort": "desc"}},
+        df,
+    )
+    trace = next(t for t in fig.data if t.type == "scattergl" or t.type == "scatter")
+    assert list(trace.x) == [1, 2, 3, 4]
+    assert list(trace.y) == [40, 10, 30, 20]
+
+
+def test_bar_chart_still_sorts_by_y_when_asked():
+    """The behaviour for bar charts is unchanged — `sort: desc` still
+    reorders bars by y descending."""
+    df = pd.DataFrame({"cat": ["a", "b", "c"], "n": [10, 30, 20]})
+    fig = render(
+        {"chart": {"type": "bar", "x": "cat", "y": "n", "sort": "desc"}},
+        df,
+    )
+    trace = fig.data[0]
+    assert list(trace.x) == ["b", "c", "a"]
+    assert list(trace.y) == [30, 20, 10]
+
+
+def test_line_chart_still_honors_top_n():
+    """`top_n` still truncates line charts — only the sort behaviour
+    changed."""
+    df = pd.DataFrame({
+        "d": list(range(10)),
+        "n": list(range(10)),
+    })
+    fig = render(
+        {"chart": {"type": "line", "x": "d", "y": "n", "sort": "none", "top_n": 3}},
+        df,
+    )
+    trace = next(t for t in fig.data if t.type == "scatter")
+    assert list(trace.x) == [0, 1, 2]
+    assert list(trace.y) == [0, 1, 2]
