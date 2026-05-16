@@ -94,7 +94,7 @@ def test_containment_equals_outcome_resolved(db):
 # ---------------------------------------------------------------------- helper views
 
 def test_helper_views_present(db):
-    for v in ("v_conv_with_intent", "v_eval_pivot", "v_dc_pivot", "v_conversations_active"):
+    for v in ("v_conv_with_intent", "v_eval_pivot", "v_conv_with_dc", "v_conversations_active"):
         n = db.execute(f"SELECT COUNT(*) FROM {v}").fetchone()[0]
         assert n > 0, f"{v} returned zero rows"
 
@@ -108,6 +108,55 @@ def test_eval_pivot_columns(db):
         "tool_call_success_rate",
     }
     assert expected.issubset(cols), f"missing eval pivot cols: {expected - set(cols)}"
+
+
+def test_conv_with_dc_columns(db):
+    cols = [c[0] for c in db.execute("DESCRIBE v_conv_with_dc").fetchall()]
+    expected = {
+        "auth_method_used", "transfer_amount_bucket", "promised_callback",
+        "complaint_detected", "self_service_completed", "topic_tags",
+    }
+    assert expected.issubset(cols), f"missing dc pivot cols: {expected - set(cols)}"
+
+
+# ---------------------------------------------------------------------- new exploration tools
+
+def test_value_counts_returns_sorted_distinct():
+    res = call_tool("value_counts", {"table": "v_conversations", "column": "main_language"})
+    assert "error" not in res, res
+    assert res["distinct_values"] == 2
+    counts = [v["count"] for v in res["values"]]
+    assert counts == sorted(counts, reverse=True), "value_counts must be sorted desc"
+    assert {v["value"] for v in res["values"]} == {"el", "en"}
+
+
+def test_value_counts_rejects_bad_identifier():
+    res = call_tool("value_counts", {"table": "v c", "column": "x"})
+    assert "error" in res
+
+
+def test_value_counts_truncates_to_top_n():
+    res = call_tool(
+        "value_counts",
+        {"table": "v_conversations", "column": "region", "top_n": 2},
+    )
+    assert "error" not in res
+    assert len(res["values"]) == 2
+    assert res["truncated"] is True
+
+
+def test_time_range_matches_dataset_window():
+    res = call_tool("time_range", {"table": "v_conversations", "column": "start_time"})
+    assert "error" not in res
+    assert res["min"] < res["max"]
+    assert res["row_count"] == 10_000
+    assert res["non_null_count"] == 10_000
+
+
+def test_time_range_default_column():
+    res = call_tool("time_range", {"table": "v_conversations"})
+    assert "error" not in res
+    assert res["column"] == "start_time"
 
 
 # ---------------------------------------------------------------------- safety layer

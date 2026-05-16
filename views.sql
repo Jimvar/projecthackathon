@@ -34,8 +34,8 @@ ON criterion_id IN (
 USING any_value(result)
 GROUP BY conversation_id, start_time, bot_version, main_language, segment, region;
 
--- v_dc_pivot: one row per conversation with each data-collection field's value as a column.
-CREATE OR REPLACE TEMP VIEW v_dc_pivot AS
+-- v_conv_with_dc: one row per conversation with each data-collection field's value as a column.
+CREATE OR REPLACE TEMP VIEW v_conv_with_dc AS
 PIVOT v_data_collection
 ON field_id IN (
   'customer_segment', 'region', 'declared_language', 'caller_line_type',

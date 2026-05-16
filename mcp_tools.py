@@ -201,6 +201,67 @@ def sample_rows(table: str, n: int = 5) -> dict[str, Any]:
     return run_sql(f"SELECT * FROM {table} LIMIT {n}")
 
 
+def value_counts(table: str, column: str, top_n: int = 20) -> dict[str, Any]:
+    """Distinct values of `column` and how often each occurs.
+
+    Faster than asking the LLM to write a GROUP BY for column discovery.
+    """
+    if not _safe_identifier(table) or not _safe_identifier(column):
+        return {"error": f"invalid identifier(s): table={table!r} column={column!r}"}
+    n = max(1, min(int(top_n), 200))
+    db = get_db()
+    try:
+        cur = db.execute(
+            f"SELECT {column} AS value, COUNT(*) AS n "
+            f"FROM {table} "
+            f"GROUP BY 1 "
+            f"ORDER BY n DESC, 1 ASC "
+            f"LIMIT {n}"
+        )
+        rows = cur.fetchall()
+        total = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        distinct = db.execute(
+            f"SELECT COUNT(DISTINCT {column}) FROM {table}"
+        ).fetchone()[0]
+    except Exception as e:
+        return {"error": f"value_counts failed: {e}"}
+    return {
+        "table": table,
+        "column": column,
+        "values": [{"value": _jsonable(r[0]), "count": int(r[1])} for r in rows],
+        "total_rows": int(total),
+        "distinct_values": int(distinct),
+        "truncated": distinct > n,
+    }
+
+
+def time_range(table: str, column: str = "start_time") -> dict[str, Any]:
+    """Min / max / count for a timestamp or date column.
+
+    The LLM uses this to translate "this month" / "last quarter" into
+    concrete WHERE clauses without having to probe the data first.
+    """
+    if not _safe_identifier(table) or not _safe_identifier(column):
+        return {"error": f"invalid identifier(s): table={table!r} column={column!r}"}
+    db = get_db()
+    try:
+        row = db.execute(
+            f"SELECT MIN({column}), MAX({column}), "
+            f"COUNT(*), COUNT({column}) "
+            f"FROM {table}"
+        ).fetchone()
+    except Exception as e:
+        return {"error": f"time_range failed: {e}"}
+    return {
+        "table": table,
+        "column": column,
+        "min": _jsonable(row[0]),
+        "max": _jsonable(row[1]),
+        "row_count": int(row[2]) if row[2] is not None else 0,
+        "non_null_count": int(row[3]) if row[3] is not None else 0,
+    }
+
+
 def switch_source(source: str) -> dict[str, Any]:
     """Toggle between the DuckDB-native flat views and JSONL-derived views."""
     source = (source or "").strip().lower()
@@ -288,6 +349,39 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "properties": {
                 "table": {"type": "string"},
                 "n": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
+            },
+            "required": ["table"],
+        },
+    },
+    "value_counts": {
+        "fn": value_counts,
+        "description": (
+            "Return the distinct values of a column and how often each occurs, "
+            "sorted by frequency descending. Use this to discover the universe "
+            "of categories before writing a GROUP BY."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "table": {"type": "string"},
+                "column": {"type": "string"},
+                "top_n": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+            },
+            "required": ["table", "column"],
+        },
+    },
+    "time_range": {
+        "fn": time_range,
+        "description": (
+            "Return min/max/count for a timestamp or date column. Use this to "
+            "translate phrases like 'this week' or 'last quarter' into concrete "
+            "WHERE clauses anchored to the dataset's actual time window."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "table": {"type": "string"},
+                "column": {"type": "string", "default": "start_time"},
             },
             "required": ["table"],
         },

@@ -30,7 +30,7 @@ NATIVE_VIEW_NAMES = (
 HELPER_VIEW_NAMES = (
     "v_conv_with_intent",
     "v_eval_pivot",
-    "v_dc_pivot",
+    "v_conv_with_dc",
 )
 
 

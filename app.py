@@ -1,13 +1,10 @@
-"""Streamlit chat UI — Phase 1 vertical slice.
+"""Streamlit chat UI.
 
 Run with:
     uv run streamlit run app.py
 """
 
 from __future__ import annotations
-
-import json
-from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -23,6 +20,13 @@ load_dotenv()
 st.set_page_config(page_title="NR2Dashboard", page_icon="📊", layout="wide")
 
 
+SCOPE_LABELS = ["Full window", "Last 30 days", "Last 7 days"]
+SCOPE_PHRASE = {
+    "Last 30 days": "Use only the last 30 days of data.",
+    "Last 7 days": "Use only the last 7 days of data.",
+}
+
+
 # ---------------------------------------------------------------------- cached resources
 
 
@@ -36,7 +40,7 @@ def _orchestrator_singleton() -> Orchestrator:
     return Orchestrator()
 
 
-# ---------------------------------------------------------------------- helpers
+# ---------------------------------------------------------------------- state
 
 
 def _reset_history() -> None:
@@ -44,24 +48,35 @@ def _reset_history() -> None:
 
 
 def _ensure_state() -> None:
-    if "history" not in st.session_state:
-        st.session_state.history = []
-    if "active_source" not in st.session_state:
-        st.session_state.active_source = "duckdb"
+    st.session_state.setdefault("history", [])
+    st.session_state.setdefault("active_source", "duckdb")
+    st.session_state.setdefault("scope", "Full window")
 
 
-def _df_from_sql(sql: str) -> pd.DataFrame:
+def _augment_with_scope(text: str) -> str:
+    scope = st.session_state.get("scope", "Full window")
+    phrase = SCOPE_PHRASE.get(scope)
+    if not phrase:
+        return text
+    return f"{text}\n\n[scope] {phrase}"
+
+
+def _df_from_sql(sql: str) -> tuple[pd.DataFrame, str | None]:
     """Re-run the LLM's SQL to get a DataFrame for plotting.
 
-    We could thread the result through the orchestrator, but re-running is
-    cheap, fully cacheable, and keeps the in-memory shape simple.
+    Returns ``(df, error_message)``; error message is non-None if the SQL
+    failed safety or execution, so the UI can show it instead of an empty
+    chart.
     """
     if not sql:
-        return pd.DataFrame()
+        return pd.DataFrame(), None
     result = call_tool("run_sql", {"query": sql})
     if "error" in result:
-        return pd.DataFrame()
-    return pd.DataFrame(result.get("rows", []), columns=result.get("columns", []))
+        return pd.DataFrame(), str(result["error"])
+    return (
+        pd.DataFrame(result.get("rows", []), columns=result.get("columns", [])),
+        None,
+    )
 
 
 # ---------------------------------------------------------------------- sidebar
@@ -71,7 +86,6 @@ def _sidebar() -> None:
     st.sidebar.title("NR2Dashboard")
     st.sidebar.caption("Natural-language → dashboard")
 
-    # Active data source
     source = st.sidebar.radio(
         "Data source",
         options=["duckdb", "jsonl"],
@@ -83,7 +97,6 @@ def _sidebar() -> None:
         call_tool("switch_source", {"source": source})
         st.session_state.active_source = source
 
-    # Model info
     orch = _orchestrator_singleton()
     st.sidebar.text(f"Model: {orch.client.model}")
 
@@ -100,8 +113,63 @@ def _sidebar() -> None:
             "- **v_data_collection** — 14 fields per call (long)\n"
             "- **v_tool_calls** — one row / tool invocation\n"
             "- **v_conv_with_intent** — v_conversations + first user intent\n"
-            "- **v_eval_pivot / v_dc_pivot** — wide forms of the long views\n"
+            "- **v_eval_pivot / v_conv_with_dc** — wide forms of the long views\n"
         )
+
+
+# ---------------------------------------------------------------------- top scope bar
+
+
+def _scope_bar() -> None:
+    """Time-scope pills that augment the next user message."""
+    cols = st.columns([1, 6])
+    with cols[0]:
+        st.caption("Time scope")
+    with cols[1]:
+        chosen = st.pills(
+            "scope",
+            options=SCOPE_LABELS,
+            default=st.session_state.get("scope", "Full window"),
+            selection_mode="single",
+            label_visibility="collapsed",
+            key="_scope_pills",
+        )
+        if chosen and chosen != st.session_state.scope:
+            st.session_state.scope = chosen
+            st.rerun()
+
+
+# ---------------------------------------------------------------------- replay + render helpers
+
+
+def _render_assistant_turn(turn: dict) -> None:
+    if turn.get("error"):
+        st.error(turn["error"])
+    if turn.get("explanation"):
+        st.markdown(turn["explanation"])
+    chart = turn.get("chart") or {}
+    sql = turn.get("sql") or ""
+    if chart and sql:
+        df, err = _df_from_sql(sql)
+        if err:
+            st.warning(f"Could not render this chart: {err}")
+        elif df.empty:
+            st.info("Query returned no rows.")
+        else:
+            fig = render({"chart": chart}, df)
+            st.plotly_chart(fig, use_container_width=True)
+    if sql:
+        with st.expander("Show SQL"):
+            st.code(sql, language="sql")
+
+
+def _replay_history() -> None:
+    for turn in st.session_state.history:
+        with st.chat_message(turn["role"]):
+            if turn["role"] == "user":
+                st.markdown(turn["text"])
+            else:
+                _render_assistant_turn(turn)
 
 
 # ---------------------------------------------------------------------- main
@@ -109,7 +177,7 @@ def _sidebar() -> None:
 
 def main() -> None:
     _ensure_state()
-    _db_singleton()  # warms the DuckDB connection
+    _db_singleton()
     _sidebar()
 
     st.title("NR2Dashboard")
@@ -117,25 +185,9 @@ def main() -> None:
         "Ask the voicebot dataset anything — in English or Greek. "
         "Try: *Show me a pie chart of Greek vs English users.*"
     )
+    _scope_bar()
 
-    # Replay history first so the chat stays anchored.
-    for turn in st.session_state.history:
-        with st.chat_message(turn["role"]):
-            if turn["role"] == "user":
-                st.markdown(turn["text"])
-            else:
-                if turn.get("error"):
-                    st.error(turn["error"])
-                if turn.get("explanation"):
-                    st.markdown(turn["explanation"])
-                if turn.get("chart") and turn.get("sql"):
-                    df = _df_from_sql(turn["sql"])
-                    if not df.empty:
-                        fig = render({"chart": turn["chart"]}, df)
-                        st.plotly_chart(fig, use_container_width=True)
-                if turn.get("sql"):
-                    with st.expander("Show SQL"):
-                        st.code(turn["sql"], language="sql")
+    _replay_history()
 
     user_text = st.chat_input("Ask a question…")
     if not user_text:
@@ -149,39 +201,27 @@ def main() -> None:
         with st.spinner("Thinking…"):
             try:
                 orch = _orchestrator_singleton()
-                turnlog = orch.run(user_text, history=st.session_state.history[:-1])
-            except Exception as e:  # pragma: no cover - shown live in UI
+                turnlog = orch.run(
+                    _augment_with_scope(user_text),
+                    history=st.session_state.history[:-1],
+                )
+            except Exception as e:
                 st.error(f"Orchestrator error: {e}")
                 st.session_state.history.append(
                     {"role": "assistant", "error": str(e), "explanation": "", "sql": "", "chart": {}}
                 )
                 return
 
-        if turnlog.error:
-            st.error(turnlog.error)
-        if turnlog.explanation:
-            st.markdown(turnlog.explanation)
-        if turnlog.sql and turnlog.chart_spec:
-            df = _df_from_sql(turnlog.sql)
-            if df.empty:
-                st.warning("Query returned no rows.")
-            else:
-                fig = render({"chart": turnlog.chart_spec}, df)
-                st.plotly_chart(fig, use_container_width=True)
-        if turnlog.sql:
-            with st.expander("Show SQL"):
-                st.code(turnlog.sql, language="sql")
-
-        st.session_state.history.append(
-            {
-                "role": "assistant",
-                "text": turnlog.explanation,
-                "explanation": turnlog.explanation,
-                "sql": turnlog.sql,
-                "chart": turnlog.chart_spec or {},
-                "error": turnlog.error,
-            }
-        )
+        turn = {
+            "role": "assistant",
+            "text": turnlog.explanation,
+            "explanation": turnlog.explanation,
+            "sql": turnlog.sql,
+            "chart": turnlog.chart_spec or {},
+            "error": turnlog.error,
+        }
+        _render_assistant_turn(turn)
+        st.session_state.history.append(turn)
 
 
 if __name__ == "__main__":
