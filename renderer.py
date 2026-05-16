@@ -56,7 +56,7 @@ def render(spec: dict[str, Any], df: pd.DataFrame) -> go.Figure:
     style = chart.get("style") or {}
     palette = _palette(style.get("palette"))
 
-    df = _apply_sort_and_topn(df, chart)
+    df = _apply_sort_and_topn(df, chart, chart_type)
 
     title = chart.get("title") or ""
 
@@ -84,13 +84,31 @@ def _palette(name: str | None) -> list[str]:
     return PALETTES.get((name or "default").lower(), PALETTES["default"])
 
 
-def _apply_sort_and_topn(df: pd.DataFrame, chart: dict) -> pd.DataFrame:
+# Chart types where `sort` means "reorder rows by y" (independent
+# categorical buckets). Line/area/scatter are TIME-SERIES-ish — the row
+# order is the x-axis order from the SQL's ORDER BY, and re-sorting by y
+# would produce spaghetti.
+_SORT_BY_Y_CHARTS = frozenset({"bar", "pie", "donut", "kpi", "table", "heatmap"})
+
+
+def _apply_sort_and_topn(df: pd.DataFrame, chart: dict, chart_type: str = "") -> pd.DataFrame:
+    """Optionally reorder + truncate `df` for the chart.
+
+    `sort=asc/desc` only takes effect for chart types where row order is
+    semantically the "ranking" (bar, pie, donut, etc.) — never for
+    line / area / scatter, which expect rows in x-axis order from the
+    SQL. `top_n` applies everywhere.
+    """
     if df.empty:
         return df
     y = chart.get("y")
     sort = (chart.get("sort") or "none").lower()
     top_n = chart.get("top_n")
-    if y and y in df.columns and sort in ("asc", "desc"):
+    if (
+        y and y in df.columns
+        and sort in ("asc", "desc")
+        and chart_type.lower() in _SORT_BY_Y_CHARTS
+    ):
         df = df.sort_values(by=y, ascending=(sort == "asc"))
     if top_n and isinstance(top_n, int) and top_n > 0 and len(df) > top_n:
         df = df.head(top_n)

@@ -179,6 +179,13 @@ Map the user's words into the spec:
 If the user gives no style hint, leave the fields at sensible defaults
 (`palette="default"`, `sort="none"`, `top_n=null`, `thresholds=null`).
 
+**Important about `sort`.** It only applies to charts where row order *is*
+the meaning — bar / pie / donut / heatmap / table / kpi (rankings,
+parts-of-whole). For **`line`, `area`, and `scatter`** always emit
+`sort: "none"` — those charts expect rows in the SQL's `ORDER BY` order
+(usually chronological). Setting `sort: "asc"` on a line chart scrambles
+the line into spaghetti by reordering points by y-value.
+
 ## When to compose a panel (multi-chart answer)
 
 Most questions get a single chart. **Some questions deserve a small panel
@@ -353,7 +360,7 @@ and an `"explanation"` that asks a clarifying question. Do not invent columns.
     "x": "start_date",
     "y": "n",
     "series": null,
-    "sort": "asc",
+    "sort": "none",
     "top_n": null,
     "title": "Όγκος κλήσεων — τελευταίες 7 ημέρες",
     "style": {"palette": "default", "thresholds": null}
@@ -463,7 +470,7 @@ Prior turn the model returned:
     "x": "day",
     "y": "tool_success_rate",
     "series": null,
-    "sort": "asc",
+    "sort": "none",
     "top_n": null,
     "title": "Daily tool success rate — last 90 days",
     "style": {"palette": "default", "thresholds": null}
