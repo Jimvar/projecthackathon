@@ -338,6 +338,86 @@ def test_orchestrator_history_trim_starts_on_user():
     )
 
 
+def test_gemini_preserves_thought_signature_on_round_trip():
+    """Gemini 3 rejects a function-call round-trip whose Part is missing
+    a thought_signature. When the orchestrator builds the next request,
+    the assistant turn must echo the original Parts (with signatures)
+    verbatim — not freshly-constructed Parts that strip them."""
+    from google.genai import types
+
+    from llm_client import LLMResponse, ToolCall, _to_gemini_contents
+
+    signed_part = types.Part(
+        function_call=types.FunctionCall(name="time_range", args={"days": 7}),
+        thought_signature=b"opaque-bytes-from-model",
+    )
+    asst_msg = Orchestrator._assistant_message_from(
+        LLMResponse(
+            text=None,
+            tool_calls=[ToolCall(name="time_range", arguments={"days": 7}, id="tc1")],
+            raw=None,
+            raw_parts=[signed_part],
+        )
+    )
+    assert asst_msg["_gemini_parts"] == [signed_part]
+
+    contents = _to_gemini_contents([
+        {"role": "user", "text": "last week?"},
+        asst_msg,
+        {"role": "tool", "name": "time_range", "tool_call_id": "tc1",
+         "response": {"start": "2024-01-01", "end": "2024-01-07"}},
+    ])
+    model_turn = next(c for c in contents if c.role == "model")
+    assert model_turn.parts[0].thought_signature == b"opaque-bytes-from-model"
+    assert model_turn.parts[0].function_call.name == "time_range"
+
+
+def test_gemini_reconstruct_when_no_raw_parts_present():
+    """Test stubs (and the OpenAI provider's outputs) don't supply
+    `_gemini_parts`. In that case we still need to round-trip a usable
+    function_call Part, just without a signature."""
+    from llm_client import _to_gemini_contents
+
+    contents = _to_gemini_contents([
+        {"role": "user", "text": "hi"},
+        {"role": "model", "tool_calls": [{"name": "foo", "arguments": {"a": 1}}]},
+        {"role": "tool", "name": "foo", "response": {"ok": True}},
+    ])
+    model_turn = next(c for c in contents if c.role == "model")
+    assert model_turn.parts[0].function_call.name == "foo"
+    assert model_turn.parts[0].thought_signature is None
+
+
+def test_gemini_parse_skips_thought_summary_text():
+    """A Part with thought=True is the model's internal monologue and
+    must not be included in the response text — otherwise the
+    orchestrator tries to parse the thought summary as the JSON
+    contract."""
+    from google.genai import types
+
+    from llm_client import _parse_gemini_response
+
+    response = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=types.Content(
+                    role="model",
+                    parts=[
+                        types.Part(text="Let me think about this...", thought=True,
+                                   thought_signature=b"sig"),
+                        types.Part(text='{"sql": "SELECT 1", "chart": {}, "explanation": "ok"}'),
+                    ],
+                )
+            )
+        ]
+    )
+    text, tool_calls, raw_parts = _parse_gemini_response(response)
+    assert tool_calls == []
+    assert text and text.startswith('{"sql"')
+    assert "Let me think" not in text
+    assert len(raw_parts) == 2  # both preserved for round-trip
+
+
 def test_orchestrator_threads_tool_call_id():
     """When the LLM emits a tool call with id 'X', the orchestrator must
     send the matching tool response back with tool_call_id 'X'."""

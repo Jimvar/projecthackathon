@@ -40,6 +40,12 @@ class LLMResponse:
     text: str | None
     tool_calls: list[ToolCall]
     raw: Any  # the underlying SDK response, kept for logging
+    # Gemini-only. The full ordered Part list from the model's content,
+    # preserved verbatim so we can echo thought_signature bytes back on
+    # the next turn — Gemini 3 rejects function_call round-trips that
+    # drop the signature with INVALID_ARGUMENT. Other providers leave
+    # this None.
+    raw_parts: list[Any] | None = None
 
 
 # ---------------------------------------------------------------------- factory
@@ -126,8 +132,10 @@ class LLMClient:
             contents=contents,
             config=config,
         )
-        text, tool_calls = _parse_gemini_response(response)
-        return LLMResponse(text=text, tool_calls=tool_calls, raw=response)
+        text, tool_calls, raw_parts = _parse_gemini_response(response)
+        return LLMResponse(
+            text=text, tool_calls=tool_calls, raw=response, raw_parts=raw_parts
+        )
 
 
 def _to_gemini_contents(messages: list[dict]) -> list[types.Content]:
@@ -137,6 +145,15 @@ def _to_gemini_contents(messages: list[dict]) -> list[types.Content]:
         if role == "user":
             out.append(types.Content(role="user", parts=[types.Part(text=m["text"])]))
         elif role in ("assistant", "model"):
+            # Prefer the original parts list we captured from the model's
+            # response, if the caller threaded it through. This preserves
+            # thought_signature bytes on function_call parts (and any
+            # thought-only parts), which Gemini 3 requires when echoing a
+            # function call back alongside its function response.
+            raw_parts = m.get("_gemini_parts")
+            if raw_parts:
+                out.append(types.Content(role="model", parts=list(raw_parts)))
+                continue
             parts: list[types.Part] = []
             if m.get("text"):
                 parts.append(types.Part(text=m["text"]))
@@ -171,15 +188,19 @@ def _to_gemini_contents(messages: list[dict]) -> list[types.Content]:
     return out
 
 
-def _parse_gemini_response(response: Any) -> tuple[str | None, list[ToolCall]]:
+def _parse_gemini_response(
+    response: Any,
+) -> tuple[str | None, list[ToolCall], list[Any]]:
     text_chunks: list[str] = []
     tool_calls: list[ToolCall] = []
+    raw_parts: list[Any] = []
     candidates = getattr(response, "candidates", None) or []
     for cand in candidates:
         content = getattr(cand, "content", None)
         if content is None:
             continue
         for part in content.parts or []:
+            raw_parts.append(part)
             if getattr(part, "function_call", None):
                 fc = part.function_call
                 args = dict(fc.args) if fc.args else {}
@@ -188,9 +209,13 @@ def _parse_gemini_response(response: Any) -> tuple[str | None, list[ToolCall]]:
                 fc_id = getattr(fc, "id", "") or f"call_{len(tool_calls)}_{fc.name}"
                 tool_calls.append(ToolCall(name=fc.name, arguments=args, id=fc_id))
             elif getattr(part, "text", None):
-                text_chunks.append(part.text)
+                # Skip thought-summary text (thought=True) — it's the
+                # model's internal monologue, not the answer the
+                # orchestrator should parse as the JSON contract.
+                if not getattr(part, "thought", False):
+                    text_chunks.append(part.text)
     text = "\n".join(t for t in text_chunks if t) or None
-    return text, tool_calls
+    return text, tool_calls, raw_parts
 
 
 # ---------------------------------------------------------------------- OpenAI
