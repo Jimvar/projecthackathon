@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "Natural-language → dashboard over the SmartRep voicebot dataset"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "duckdb>=1.0.0",
     "streamlit>=1.36",
@@ -24,7 +25,8 @@ dev = [
 ]
 
 [build-system]
-requires = ["setuptools>=68"]
+# >=77 required for SPDX `license = "MIT"` + `license-files`.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
@@ -36,6 +38,7 @@ packages = []
 py-modules = [
     "app",
     "db",
+    "eval_grading",
     "llm_client",
     "mcp_server",
     "mcp_tools",

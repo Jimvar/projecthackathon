@@ -6,7 +6,12 @@ the LLM emits flows through `validate_sql` first:
 * Accept only `SELECT` / `WITH` statements.
 * Reject DDL/DML/PRAGMA/COPY/ATTACH/EXPORT/etc.
 * Reject multi-statement queries.
+* Reject table-valued functions that read the filesystem
+  (`read_csv_auto`, `read_text`, etc.) — even inside a SELECT.
 * The actual row/byte caps are applied at execution time elsewhere.
+
+Defense in depth — the DB connection also has
+`SET enable_external_access = false` after JSONL views are registered.
 """
 
 from __future__ import annotations
@@ -37,6 +42,19 @@ FORBIDDEN_NODES = (
     exp.Command,  # SET, EXPLAIN ANALYZE etc. lower to this.
     exp.Use,
 )
+
+# Table-valued functions that read the filesystem or the network.
+# Allowed inside our internal setup SQL (see db.py) but never inside a
+# user-supplied query — a SELECT against any of these is enough to leak
+# `/etc/passwd` or exfil over HTTP if `httpfs` is installed.
+FORBIDDEN_FUNCTIONS = frozenset({
+    "read_csv", "read_csv_auto",
+    "read_json", "read_json_auto", "read_ndjson", "read_ndjson_auto",
+    "read_parquet", "parquet_scan",
+    "read_text", "read_blob",
+    "glob",
+    "read_xlsx", "read_excel",
+})
 
 
 @dataclass
@@ -82,7 +100,7 @@ def validate_sql(query: str) -> ValidationResult:
             f"only SELECT / WITH queries are allowed (got {type(inner).__name__})",
         )
 
-    # Walk the tree and look for forbidden subnodes anywhere.
+    # Walk the tree and look for forbidden subnodes / function calls anywhere.
     for node in root.walk():
         # sqlglot returns tuple (node, parent, key) in older versions; just-node in newer.
         n = node[0] if isinstance(node, tuple) else node
@@ -91,5 +109,29 @@ def validate_sql(query: str) -> ValidationResult:
                 False,
                 f"forbidden SQL construct: {type(n).__name__}",
             )
+        # Block table-valued / scalar reads of the filesystem. DuckDB's
+        # `read_csv_auto`, `read_text`, etc. appear as Anonymous nodes
+        # (or as specific Func subclasses) — match on the name.
+        fname = _function_name(n)
+        if fname and fname.lower() in FORBIDDEN_FUNCTIONS:
+            return ValidationResult(
+                False,
+                f"forbidden function call: {fname}() can read the filesystem",
+            )
 
     return ValidationResult(True, "", root.sql(dialect="duckdb"))
+
+
+def _function_name(node) -> str | None:
+    """Return the function name if `node` is a function call, else None.
+
+    sqlglot represents unknown functions as `exp.Anonymous`, with the name
+    in `.this`. Known functions are subclasses of `exp.Func`. We match either.
+    """
+    if isinstance(node, exp.Anonymous):
+        name = node.this
+        return name if isinstance(name, str) else None
+    if isinstance(node, exp.Func):
+        # exp.Func uses sql_name() or key
+        return getattr(node, "sql_name", lambda: None)() or node.key
+    return None

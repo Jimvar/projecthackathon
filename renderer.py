@@ -211,24 +211,36 @@ def _kpi(df: pd.DataFrame, chart: dict, title: str) -> go.Figure:
         return _table(df, title)
     y = chart.get("y")
     val = df.iloc[0][y] if y and y in df.columns else df.iloc[0, 0]
+    label = title or (y or "Value")
     try:
         val_f = float(val)
-        text = f"{val_f:,.2f}" if abs(val_f) < 1_000_000 else f"{val_f:,.0f}"
-    except Exception:
-        text = str(val)
+    except (TypeError, ValueError):
+        # Non-numeric scalar — render as a big text annotation. Plotly's
+        # Indicator only supports numbers, so we fall back to a blank
+        # figure with a single centered annotation.
+        fig = go.Figure().add_annotation(
+            text=str(val),
+            showarrow=False,
+            font=dict(size=42),
+            x=0.5,
+            y=0.5,
+        )
+        fig.update_layout(
+            title=label,
+            xaxis_visible=False,
+            yaxis_visible=False,
+            margin=dict(l=10, r=10, t=40, b=10),
+        )
+        return fig
+
     fig = go.Figure(
         go.Indicator(
             mode="number",
-            value=val_f if isinstance(val, (int, float)) else 0,
-            title={"text": title or (y or "Value")},
-            number={"valueformat": ",.2f"} if isinstance(val, (int, float)) else None,
+            value=val_f,
+            title={"text": label},
+            number={"valueformat": ",.2f"},
         )
     )
-    if not isinstance(val, (int, float)):
-        fig = go.Figure().add_annotation(
-            text=text, showarrow=False, font=dict(size=42), x=0.5, y=0.5
-        )
-        fig.update_layout(title=title, xaxis_visible=False, yaxis_visible=False)
     fig.update_layout(margin=dict(l=10, r=10, t=40, b=10))
     return fig
 

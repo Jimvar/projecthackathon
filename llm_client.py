@@ -25,6 +25,10 @@ OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
 class ToolCall:
     name: str
     arguments: dict[str, Any]
+    # Provider-supplied id, used to thread tool results back through the
+    # OpenAI provider (which requires tool_call_id round-tripping). For
+    # Gemini, ids are optional — we fill in a synthetic one for symmetry.
+    id: str = ""
 
 
 @dataclass
@@ -167,7 +171,10 @@ def _parse_gemini_response(response: Any) -> tuple[str | None, list[ToolCall]]:
             if getattr(part, "function_call", None):
                 fc = part.function_call
                 args = dict(fc.args) if fc.args else {}
-                tool_calls.append(ToolCall(name=fc.name, arguments=args))
+                # Gemini sometimes supplies an id, sometimes not.
+                # Synthesize one from name + index for symmetry with OpenAI.
+                fc_id = getattr(fc, "id", "") or f"call_{len(tool_calls)}_{fc.name}"
+                tool_calls.append(ToolCall(name=fc.name, arguments=args, id=fc_id))
             elif getattr(part, "text", None):
                 text_chunks.append(part.text)
     text = "\n".join(t for t in text_chunks if t) or None
@@ -258,7 +265,12 @@ def _to_openai_messages(messages: list[dict], system_instruction: str | None) ->
             if tcs:
                 entry["tool_calls"] = [
                     {
-                        "id": f"call_{idx}",
+                        # Use the upstream id if the caller threaded one
+                        # through; fall back to a deterministic synthesis
+                        # that matches the one the tool-response branch
+                        # below would generate (so a missing id still
+                        # round-trips correctly).
+                        "id": tc.get("id") or f"call_{idx}_{tc['name']}",
                         "type": "function",
                         "function": {
                             "name": tc["name"],
@@ -269,13 +281,15 @@ def _to_openai_messages(messages: list[dict], system_instruction: str | None) ->
                 ]
             out.append(entry)
         elif role == "tool":
-            # Tool result lands as a tool-role message. OpenAI requires
-            # tool_call_id, but we don't track those — derive one
-            # deterministically from the prior assistant turn so the
-            # API doesn't reject the payload.
+            # OpenAI rejects tool messages whose tool_call_id doesn't
+            # appear in a prior assistant turn's tool_calls. Prefer the
+            # id the caller threaded through; fall back to the same
+            # `call_<idx>_<name>` shape the assistant branch synthesized
+            # when no id was supplied.
+            tool_call_id = m.get("tool_call_id") or f"call_0_{m.get('name', 'tool')}"
             out.append({
                 "role": "tool",
-                "tool_call_id": f"call_{m.get('name', 'tool')}",
+                "tool_call_id": tool_call_id,
                 "content": json.dumps(m["response"], default=str),
             })
         else:
@@ -293,5 +307,9 @@ def _parse_openai_response(response: Any) -> tuple[str | None, list[ToolCall]]:
             args = json.loads(tc.function.arguments or "{}")
         except json.JSONDecodeError:
             args = {}
-        tool_calls.append(ToolCall(name=tc.function.name, arguments=args))
+        # Preserve the provider-supplied id so the tool response we
+        # send back has a matching tool_call_id.
+        tool_calls.append(
+            ToolCall(name=tc.function.name, arguments=args, id=getattr(tc, "id", "") or "")
+        )
     return text, tool_calls

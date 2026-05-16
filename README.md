@@ -40,9 +40,17 @@ answer. Built for the SmartRep Makeathon — Phases 0, 1, 2, 3, and 4.
            │ read-only
            ▼
    data/conversations.duckdb   ↔   data/conversations.jsonl
-   (5 native flat views,            (read_json_auto → same column shape
-    3 helper views)                  via v_conversations_jsonl)
+   (5 native flat views,            (materialized once at startup,
+    3 helper views)                  same column shape as DuckDB views)
 ```
+
+> **Note on the MCP server.** `mcp_tools.py` is the in-process Python
+> implementation of the eight tools; the orchestrator calls into it
+> directly for speed. `mcp_server.py` re-exposes the same functions over
+> the MCP stdio protocol (`uv run python mcp_server.py`) — verified
+> reachable end-to-end via the official MCP client — and is what the
+> PDF brief's "MCP server" requirement points at. Either path produces
+> identical results.
 
 ## Stack
 
@@ -118,13 +126,14 @@ uv run streamlit run app.py
 # MCP server as a separate process (stdio)
 uv run python mcp_server.py
 
-# 5-question smoke against Gemini
+# 5-question dev-time smoke against Gemini (~20s)
 uv run python scripts/smoke.py
 
-# 60-second pre-demo check (one question per shape + the brief's flagships)
+# 8-question pre-demo check — covers every shape + the brief's flagships
+# (~60s). Run this immediately before showing the system to a judge.
 uv run python scripts/preflight.py
 
-# Full eval suite with pass/partial/fail grid
+# Full 40-question eval with pass/partial/fail grid (~2-3 min)
 uv run python scripts/run_eval.py
 uv run python scripts/run_eval.py --shape ranking
 uv run python scripts/run_eval.py --language el
@@ -143,6 +152,16 @@ OPENAI_API_KEY=sk-...
 LLM_PROVIDER=openai   # default is "gemini"
 OPENAI_MODEL=gpt-4o-mini
 ```
+
+### Optional: tunable knobs
+
+| Env var | Default | What it does |
+|---|---|---|
+| `NR2_ROW_CAP` | `10000` | Max rows `run_sql` returns to the LLM. Bump for "top 50,000" requests. |
+| `NR2_BYTE_CAP` | `256000` | Max JSON-encoded payload bytes. |
+| `NR2_SQL_CACHE_MAX` | `128` | LRU capacity of the `(source, sql)` cache. |
+| `NR2_MAX_TOOL_HOPS` | `6` | Safety stop for the tool-use loop. |
+| `NR2_MAX_HISTORY_TURNS` | `12` | Most-recent history entries forwarded to the LLM. |
 
 The sidebar shows the active provider so the audience can see which
 brain is running.
@@ -243,6 +262,39 @@ platform secrets — never in the image.
   out-of-window comparison, Greek anomaly hunt).
 - Static guard (`test_no_hardcoded_dispatch_in_source`) prevents the
   example repo's banned NL-to-SQL lookup pattern from sneaking back in.
+
+### Phase 5 — Review fixes & hardening
+- **SQL safety blocks file-read functions.** `read_csv_auto`, `read_text`,
+  `read_json_auto`, `read_parquet`, `read_blob`, and `glob()` are
+  rejected by `sql_safety.py` — previously a prompt like
+  *"SELECT * FROM read_csv_auto('/etc/passwd')"* would have executed.
+  Defense in depth: the DuckDB connection also runs
+  `SET enable_external_access = false` after JSONL views are
+  materialized at startup.
+- **OpenAI provider tool-call ids now round-trip end-to-end.** Previously
+  the assistant's `tool_calls[*].id` ("call_0") and the matching
+  tool response's `tool_call_id` ("call_run_sql") didn't agree, which
+  OpenAI's API rejects. `ToolCall.id` is now a real field threaded
+  through the orchestrator.
+- **SQL cache is now thread-safe** — switched from a `dict` + manual
+  ordering list to `OrderedDict.move_to_end` under a `threading.Lock`.
+- **History trim preserves user/assistant alternation** — orphaned
+  assistant contracts at the head of the replay list confused Gemini
+  on long sessions.
+- **`_kpi` renderer no longer builds-and-discards a figure** for
+  non-numeric scalars. One clean try/except branch.
+- **Streamlit replay caches the rendered Plotly figure per turn**, so
+  re-renders are O(1) per prior turn instead of O(rows).
+- **JSONL source materialized at startup** as a `TEMP TABLE` so the
+  external-access lockdown can stay on after init.
+- **Tunable knobs** (`NR2_ROW_CAP`, `NR2_BYTE_CAP`, `NR2_SQL_CACHE_MAX`,
+  `NR2_MAX_TOOL_HOPS`, `NR2_MAX_HISTORY_TURNS`) read from env.
+- **License field uses SPDX form** (`license = "MIT"` + `license-files`)
+  and the `setuptools` floor moved to `>=77` to support it.
+- **Dockerfile** aligned to `python:3.10-slim` to match the README floor.
+- **`eval_grading.py`** extracts the `tag_turn` function shared by
+  `scripts/smoke.py` and `scripts/preflight.py`.
+- 16 new tests covering all the fixes above. **47/47 passing.**
 
 ## Hard rules honored
 

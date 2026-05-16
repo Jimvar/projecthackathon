@@ -11,47 +11,73 @@ across both call paths.
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 from db import HELPER_VIEW_NAMES, NATIVE_VIEW_NAMES, get_db
 from sql_safety import validate_sql
 
-ROW_CAP = 10_000  # absolute ceiling on rows returned to the LLM
-BYTE_CAP = 256_000  # rough cap on JSON-encoded payload bytes
-SQL_CACHE_MAX = 128  # most recent (source, sql) pairs to keep hot
+def _env_int(name: str, default: int) -> int:
+    """Read a positive int from the environment; fall back to `default`."""
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        v = int(raw)
+        return v if v > 0 else default
+    except ValueError:
+        return default
+
+
+# Tunables (env-overridable so demo-day judges can ask for "top 50,000"
+# or run very long sessions without code changes).
+ROW_CAP = _env_int("NR2_ROW_CAP", 10_000)          # max rows returned to LLM
+BYTE_CAP = _env_int("NR2_BYTE_CAP", 256_000)       # max JSON payload bytes
+SQL_CACHE_MAX = _env_int("NR2_SQL_CACHE_MAX", 128) # max (source, sql) pairs kept hot
 
 METRICS_PATH = Path(__file__).parent / "data" / "metrics_dictionary.md"
 SCHEMA_PATH = Path(__file__).parent / "data" / "schema.md"
 
 
-# (source, normalized_sql) → payload. Filled lazily by run_sql, bounded by an
-# LRU order list. Demo wins a lot from this — judges asking the same question
-# twice get an instant chart.
-_SQL_CACHE: dict[tuple[str, str], dict] = {}
-_SQL_CACHE_ORDER: list[tuple[str, str]] = []
+# (source, normalized_sql) → payload. Filled lazily by run_sql.
+# OrderedDict.move_to_end is a single atomic op under the GIL, so the
+# cache is safe under Streamlit's concurrent session model. A lock
+# wraps the eviction (which is itself two ops: popitem + write).
+_SQL_CACHE: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
+_SQL_CACHE_LOCK = threading.Lock()
 
 
 def _store_in_cache(key: tuple[str, str], payload: dict) -> None:
-    if key in _SQL_CACHE:
-        _SQL_CACHE_ORDER.remove(key)
-    _SQL_CACHE[key] = payload
-    _SQL_CACHE_ORDER.append(key)
-    while len(_SQL_CACHE_ORDER) > SQL_CACHE_MAX:
-        evicted = _SQL_CACHE_ORDER.pop(0)
-        _SQL_CACHE.pop(evicted, None)
+    with _SQL_CACHE_LOCK:
+        if key in _SQL_CACHE:
+            _SQL_CACHE.move_to_end(key)
+        _SQL_CACHE[key] = payload
+        while len(_SQL_CACHE) > SQL_CACHE_MAX:
+            _SQL_CACHE.popitem(last=False)
+
+
+def _cache_get(key: tuple[str, str]) -> dict | None:
+    with _SQL_CACHE_LOCK:
+        if key not in _SQL_CACHE:
+            return None
+        _SQL_CACHE.move_to_end(key)
+        return _SQL_CACHE[key]
 
 
 def clear_sql_cache() -> None:
     """Clear the (source, sql) cache. Exposed for tests + the UI."""
-    _SQL_CACHE.clear()
-    _SQL_CACHE_ORDER.clear()
+    with _SQL_CACHE_LOCK:
+        _SQL_CACHE.clear()
 
 
 def sql_cache_stats() -> dict[str, int]:
     """Return basic stats for monitoring / the UI."""
-    return {"entries": len(_SQL_CACHE), "capacity": SQL_CACHE_MAX}
+    with _SQL_CACHE_LOCK:
+        return {"entries": len(_SQL_CACHE), "capacity": SQL_CACHE_MAX}
 
 
 # ---------------------------------------------------------------------- helpers
@@ -152,11 +178,8 @@ def run_sql(query: str) -> dict[str, Any]:
 
     db = get_db()
     cache_key = (db.source, v.normalized_sql)
-    cached = _SQL_CACHE.get(cache_key)
+    cached = _cache_get(cache_key)
     if cached is not None:
-        # Move to end (LRU).
-        _SQL_CACHE_ORDER.remove(cache_key)
-        _SQL_CACHE_ORDER.append(cache_key)
         result = dict(cached)
         result["cached"] = True
         return result

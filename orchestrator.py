@@ -12,6 +12,7 @@ Stitches together:
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -23,8 +24,23 @@ from mcp_tools import TOOL_REGISTRY, call_tool
 from turn_log import log_turn
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "prompts" / "system.md"
-MAX_TOOL_HOPS = 6        # safety stop for the tool-use loop
-MAX_HISTORY_TURNS = 12   # last N history entries forwarded to the LLM (6 exchanges)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        v = int(raw)
+        return v if v > 0 else default
+    except ValueError:
+        return default
+
+
+# Tunables — env-overridable so a long demo session or a deeper-tool-use
+# debug run doesn't require code changes.
+MAX_TOOL_HOPS = _env_int("NR2_MAX_TOOL_HOPS", 6)            # safety stop for the tool-use loop
+MAX_HISTORY_TURNS = _env_int("NR2_MAX_HISTORY_TURNS", 12)   # last N history entries forwarded to the LLM
 
 
 # Keywords that should trigger auto-injection of the relevant metric definition.
@@ -75,7 +91,16 @@ def _tool_specs_for_gemini() -> list[dict]:
 
 def _auto_inject_metric_hint(user_message: str) -> str | None:
     """If the user mentioned a known metric name, return the dictionary chunk
-    to prepend as a hidden system note. Saves the LLM a tool round-trip."""
+    to prepend as a hidden system note. Saves the LLM a tool round-trip.
+
+    Note on the no-hardcoded-lookups rule:
+    This is **not** a banned NL→answer dispatch. The user's question still
+    flows to the LLM unchanged; we only attach the relevant page of the
+    metrics dictionary to the prompt. The LLM still chooses what SQL to
+    write and which chart to produce. Compare to the example repo's
+    `hardcoded_dispatch`, which mapped substrings directly to predetermined
+    SQL strings — that *would* be banned.
+    """
     text = user_message.lower()
     for trigger, metric in METRIC_TRIGGERS.items():
         if trigger in text:
@@ -138,7 +163,15 @@ class Orchestrator:
                 log.tool_calls.append(
                     {"name": tc.name, "arguments": tc.arguments, "result_keys": _keys_only(result)}
                 )
-                messages.append({"role": "tool", "name": tc.name, "response": result})
+                # Thread the tool_call id through so the OpenAI provider's
+                # tool_call_id can match its prior assistant tool_calls[*].id.
+                # Gemini ignores ids; the round-trip is harmless there.
+                messages.append({
+                    "role": "tool",
+                    "name": tc.name,
+                    "tool_call_id": tc.id,
+                    "response": result,
+                })
                 if tc.name == "run_sql" and isinstance(result, dict) and not result.get("error"):
                     log.sql = result.get("sql", "")
         else:
@@ -169,10 +202,15 @@ class Orchestrator:
 
     def _build_messages(self, user_message: str, history: list[dict]) -> list[dict]:
         msgs: list[dict] = []
-        # Trim history to the last MAX_HISTORY_TURNS exchanges (keeps Gemini's
+        # Trim history to the last MAX_HISTORY_TURNS entries (keeps Gemini's
         # context bounded over long sessions while still letting it reuse the
         # most recent SQL / chart spec when the user says "now break that down…").
+        # The trim must start on a "user" entry — an orphaned assistant
+        # contract at the head confuses Gemini, which then sometimes treats
+        # the next user turn as a fresh question and re-does work.
         recent = history[-MAX_HISTORY_TURNS:] if history else []
+        while recent and recent[0].get("role") != "user":
+            recent = recent[1:]
         for h in recent:
             role = h.get("role")
             if role == "user":
@@ -202,7 +240,8 @@ class Orchestrator:
             msg["text"] = resp.text
         if resp.tool_calls:
             msg["tool_calls"] = [
-                {"name": tc.name, "arguments": tc.arguments} for tc in resp.tool_calls
+                {"name": tc.name, "arguments": tc.arguments, "id": tc.id}
+                for tc in resp.tool_calls
             ]
         return msg
 

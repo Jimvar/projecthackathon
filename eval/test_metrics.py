@@ -218,22 +218,31 @@ def test_switch_source_round_trip():
 def test_no_hardcoded_dispatch_in_source():
     """The brief forbids hand-built NL-to-result lookup tables.
 
-    Static check: no production module may contain the `hardcoded_dispatch`
-    pattern from the example repo's starter, nor a HARDCODED_RESPONSES
-    table. The check skips this test file itself (which has to mention
-    the strings to look for them).
+    Static check: no production module may *define* a `hardcoded_dispatch`
+    function/variable or a `HARDCODED_RESPONSES` lookup table — these
+    are the exact shapes the example repo's starter used. We match on
+    the definition form so explanatory comments that reference the
+    pattern by name don't trigger a false positive.
     """
-    # Build the needles dynamically so the test file's own source doesn't
-    # match against itself even if grep is used on the repo.
+    import re as _re
+    # `def name(`, `name =`, or `name: ` — any introduction of a binding.
+    # The leading non-`#`/`"` anchor ensures we only match code, not
+    # docstrings or comments.
     needles = ("hardcoded" + "_dispatch", "HARDCODED" + "_RESPONSES")
+    patterns = [
+        _re.compile(rf"^\s*(def\s+{n}\b|{n}\s*[:=])", _re.MULTILINE)
+        for n in needles
+    ]
     py_files = [
         p for p in ROOT.rglob("*.py")
-        if ".venv" not in p.parts and p.name not in {"test_metrics.py"}
+        if ".venv" not in p.parts and p.name != "test_metrics.py"
     ]
     for path in py_files:
         text = path.read_text()
-        for needle in needles:
-            assert needle not in text, f"{path}: contains banned pattern {needle!r}"
+        for pat, needle in zip(patterns, needles):
+            assert not pat.search(text), (
+                f"{path}: contains banned definition matching {needle!r}"
+            )
 
 
 def test_questions_yaml_has_required_shapes():
@@ -288,3 +297,101 @@ def test_clear_sql_cache_empties():
     assert sql_cache_stats()["entries"] == 2
     clear_sql_cache()
     assert sql_cache_stats()["entries"] == 0
+
+
+# ---------------------------------------------------------------------- file-system safety
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "SELECT * FROM read_csv_auto('/etc/hostname')",
+        "SELECT * FROM read_text('/etc/hostname')",
+        "SELECT * FROM read_json_auto('/etc/passwd')",
+        "SELECT * FROM read_parquet('/some.parquet')",
+        "SELECT * FROM read_blob('/etc/hostname')",
+        "SELECT * FROM glob('/etc/*')",
+        "WITH a AS (SELECT * FROM read_csv_auto('x.csv')) SELECT * FROM a",
+    ],
+)
+def test_run_sql_rejects_filesystem_reads(bad):
+    """sql_safety must reject DuckDB's table-valued file readers — they'd
+    let a prompt exfiltrate /etc/passwd etc."""
+    res = run_sql(bad)
+    assert "error" in res, f"should have rejected: {bad}"
+    assert "can read the filesystem" in res["error"]
+
+
+def test_db_connection_blocks_external_access(db):
+    """Belt-and-suspenders: even if a file-read function slipped past
+    sql_safety, the DuckDB connection itself should refuse external IO."""
+    import duckdb as ddb
+    with pytest.raises(ddb.PermissionException):
+        db.execute("SELECT count(*) FROM read_csv_auto('/etc/hostname')").fetchone()
+
+
+# ---------------------------------------------------------------------- pivot drift
+
+@pytest.mark.parametrize(
+    "view, source_view, column",
+    [
+        ("v_eval_pivot", "v_evaluations", "criterion_id"),
+        ("v_conv_with_dc", "v_data_collection", "field_id"),
+    ],
+)
+def test_pivot_in_lists_cover_dataset(db, view, source_view, column):
+    """The pivot views in `views.sql` hardcode an IN-list of criterion /
+    field names. If the dataset ever adds a new value, the pivot view
+    silently drops it — this test catches that drift."""
+    distinct = {
+        r[0] for r in db.execute(
+            f"SELECT DISTINCT {column} FROM {source_view}"
+        ).fetchall()
+    }
+    pivot_cols = {c[0] for c in db.execute(f"DESCRIBE {view}").fetchall()}
+    missing = distinct - pivot_cols
+    assert not missing, (
+        f"{view} is missing pivot columns for {column} values: {missing}. "
+        f"Update the IN-list in views.sql."
+    )
+
+
+# ---------------------------------------------------------------------- metric formula consistency
+
+def test_metric_formulas_match_dictionary():
+    """The system prompt must quote the metric formulas verbatim from
+    the dictionary. If `prompts/system.md` drifts away from
+    `data/metrics_dictionary.md`, the LLM gets the wrong formula and
+    the existing tests don't catch it."""
+    prompt = (ROOT / "prompts" / "system.md").read_text()
+    # The exact formula strings the dictionary defines (copied verbatim
+    # from data/metrics_dictionary.md). If the dictionary changes upstream,
+    # these need a manual update — but that's exactly the human-checked
+    # gate we want.
+    required = [
+        "COUNT(call_successful = 'success') / COUNT(*)",
+        "COUNT(call_successful = 'unknown') / COUNT(*)",
+        "COUNT(termination_reason = 'caller_hung_up') / COUNT(*)",
+        "AVG(csat_score)",
+        "AVG(call_duration_secs)",
+    ]
+    missing = [s for s in required if s not in prompt]
+    assert not missing, (
+        f"system prompt is missing verbatim metric formulas: {missing}. "
+        "If the dictionary changed, update prompts/system.md."
+    )
+
+
+# ---------------------------------------------------------------------- env override
+
+def test_row_cap_env_override(monkeypatch):
+    """ROW_CAP must be controllable via NR2_ROW_CAP for ad-hoc judge requests."""
+    monkeypatch.setenv("NR2_ROW_CAP", "42")
+    # Force a re-import so the module-level constant re-reads the env.
+    import importlib
+    import mcp_tools
+    importlib.reload(mcp_tools)
+    assert mcp_tools.ROW_CAP == 42
+    # Restore so subsequent tests see the default.
+    monkeypatch.delenv("NR2_ROW_CAP")
+    importlib.reload(mcp_tools)
+    assert mcp_tools.ROW_CAP == 10_000
