@@ -13,8 +13,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import threading
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -37,47 +35,9 @@ def _env_int(name: str, default: int) -> int:
 # or run very long sessions without code changes).
 ROW_CAP = _env_int("NR2_ROW_CAP", 10_000)          # max rows returned to LLM
 BYTE_CAP = _env_int("NR2_BYTE_CAP", 256_000)       # max JSON payload bytes
-SQL_CACHE_MAX = _env_int("NR2_SQL_CACHE_MAX", 128) # max (source, sql) pairs kept hot
 
 METRICS_PATH = Path(__file__).parent / "data" / "metrics_dictionary.md"
 SCHEMA_PATH = Path(__file__).parent / "data" / "schema.md"
-
-
-# (source, normalized_sql) → payload. Filled lazily by run_sql.
-# OrderedDict.move_to_end is a single atomic op under the GIL, so the
-# cache is safe under Streamlit's concurrent session model. A lock
-# wraps the eviction (which is itself two ops: popitem + write).
-_SQL_CACHE: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
-_SQL_CACHE_LOCK = threading.Lock()
-
-
-def _store_in_cache(key: tuple[str, str], payload: dict) -> None:
-    with _SQL_CACHE_LOCK:
-        if key in _SQL_CACHE:
-            _SQL_CACHE.move_to_end(key)
-        _SQL_CACHE[key] = payload
-        while len(_SQL_CACHE) > SQL_CACHE_MAX:
-            _SQL_CACHE.popitem(last=False)
-
-
-def _cache_get(key: tuple[str, str]) -> dict | None:
-    with _SQL_CACHE_LOCK:
-        if key not in _SQL_CACHE:
-            return None
-        _SQL_CACHE.move_to_end(key)
-        return _SQL_CACHE[key]
-
-
-def clear_sql_cache() -> None:
-    """Clear the (source, sql) cache. Exposed for tests + the UI."""
-    with _SQL_CACHE_LOCK:
-        _SQL_CACHE.clear()
-
-
-def sql_cache_stats() -> dict[str, int]:
-    """Return basic stats for monitoring / the UI."""
-    with _SQL_CACHE_LOCK:
-        return {"entries": len(_SQL_CACHE), "capacity": SQL_CACHE_MAX}
 
 
 # ---------------------------------------------------------------------- helpers
@@ -167,8 +127,7 @@ def run_sql(query: str) -> dict[str, Any]:
             "rows": [[...], ...],     # row_cap-capped
             "row_count": N,
             "truncated": bool,
-            "sql": "<normalized>",
-            "cached": bool            # true on cache hit (Phase 4)
+            "sql": "<normalized>"
         }
         or {"error": "..."}.
     """
@@ -177,13 +136,6 @@ def run_sql(query: str) -> dict[str, Any]:
         return {"error": v.reason, "sql": query}
 
     db = get_db()
-    cache_key = (db.source, v.normalized_sql)
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        result = dict(cached)
-        result["cached"] = True
-        return result
-
     try:
         cur = db.execute(v.normalized_sql)
     except Exception as e:
@@ -203,7 +155,6 @@ def run_sql(query: str) -> dict[str, Any]:
         "row_count": len(safe_rows),
         "truncated": truncated,
         "sql": v.normalized_sql,
-        "cached": False,
     }
 
     encoded = json.dumps(payload, default=str)
@@ -216,7 +167,6 @@ def run_sql(query: str) -> dict[str, Any]:
         payload["row_count"] = len(safe_rows)
         payload["truncated"] = True
 
-    _store_in_cache(cache_key, payload)
     return payload
 
 

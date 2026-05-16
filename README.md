@@ -159,7 +159,6 @@ OPENAI_MODEL=gpt-4o-mini
 |---|---|---|
 | `NR2_ROW_CAP` | `10000` | Max rows `run_sql` returns to the LLM. Bump for "top 50,000" requests. |
 | `NR2_BYTE_CAP` | `256000` | Max JSON-encoded payload bytes. |
-| `NR2_SQL_CACHE_MAX` | `128` | LRU capacity of the `(source, sql)` cache. |
 | `NR2_MAX_TOOL_HOPS` | `6` | Safety stop for the tool-use loop. |
 | `NR2_MAX_HISTORY_TURNS` | `12` | Most-recent history entries forwarded to the LLM. |
 
@@ -222,9 +221,6 @@ platform secrets — never in the image.
   writes JSONL log, prints by-shape summary.
 
 ### Phase 4 — Polish, deploy, demo prep
-- **SQL result cache** in `mcp_tools.run_sql`: `(source, normalized_sql)`
-  keyed, LRU bounded at 128 entries, returns `cached=True` on hit. Demo
-  re-asks come back in ~1 ms instead of ~4 s.
 - **OpenAI provider** in `llm_client.py` as drop-in insurance. Flip
   `LLM_PROVIDER=openai` to swap. Sidebar shows active provider.
 - **Custom Streamlit theme** (`.streamlit/config.toml`) with the
@@ -235,10 +231,6 @@ platform secrets — never in the image.
   `.streamlit/secrets.toml.example`, and a README section covering
   Streamlit Cloud, Railway, and HF Spaces.
 - **`docs/DEMO.md`** — minute-by-minute 5-minute demo script.
-- Cache hit/miss stats surfaced in the Streamlit sidebar with a
-  "Clear cache" button next to "Clear chat".
-- 5 new tests (cache hit / source-keyed cache / cache reset / provider
-  factory / OpenAI message translation) — **31/31 passing**.
 
 ### Phase 3 — Conversation memory & multi-source bonus
 - Orchestrator now caps replayed history at `MAX_HISTORY_TURNS = 12`
@@ -276,8 +268,6 @@ platform secrets — never in the image.
   tool response's `tool_call_id` ("call_run_sql") didn't agree, which
   OpenAI's API rejects. `ToolCall.id` is now a real field threaded
   through the orchestrator.
-- **SQL cache is now thread-safe** — switched from a `dict` + manual
-  ordering list to `OrderedDict.move_to_end` under a `threading.Lock`.
 - **History trim preserves user/assistant alternation** — orphaned
   assistant contracts at the head of the replay list confused Gemini
   on long sessions.
@@ -287,7 +277,7 @@ platform secrets — never in the image.
   re-renders are O(1) per prior turn instead of O(rows).
 - **JSONL source materialized at startup** as a `TEMP TABLE` so the
   external-access lockdown can stay on after init.
-- **Tunable knobs** (`NR2_ROW_CAP`, `NR2_BYTE_CAP`, `NR2_SQL_CACHE_MAX`,
+- **Tunable knobs** (`NR2_ROW_CAP`, `NR2_BYTE_CAP`,
   `NR2_MAX_TOOL_HOPS`, `NR2_MAX_HISTORY_TURNS`) read from env.
 - **License field uses SPDX form** (`license = "MIT"` + `license-files`)
   and the `setuptools` floor moved to `>=77` to support it.

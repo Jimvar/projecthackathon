@@ -21,13 +21,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from db import get_db  # noqa: E402
-from mcp_tools import (  # noqa: E402
-    call_tool,
-    clear_sql_cache,
-    get_metric_definition,
-    run_sql,
-    sql_cache_stats,
-)
+from mcp_tools import call_tool, get_metric_definition, run_sql  # noqa: E402
 
 
 GOLDEN_PATH = ROOT / "eval" / "golden.yaml"
@@ -258,45 +252,6 @@ def test_questions_yaml_has_required_shapes():
     assert len(greek) >= 6, f"need ≥6 Greek questions, have {len(greek)}"
     followups = [q for q in qs if q.get("followup_to")]
     assert len(followups) >= 2, f"need ≥2 follow-up questions, have {len(followups)}"
-
-
-# ---------------------------------------------------------------------- Phase 4 / SQL cache
-
-def test_sql_cache_hits_on_second_call():
-    """Identical (source, sql) should produce a cache hit after the first run."""
-    clear_sql_cache()
-    q = "SELECT COUNT(*) AS n FROM v_conversations"
-    first = run_sql(q)
-    second = run_sql(q)
-    assert first["cached"] is False
-    assert second["cached"] is True
-    assert second["rows"] == first["rows"]
-    assert sql_cache_stats()["entries"] == 1
-
-
-def test_sql_cache_keys_on_source():
-    """Same SQL on different sources must produce two distinct cache entries."""
-    clear_sql_cache()
-    q = "SELECT main_language, COUNT(*) AS n FROM v_conversations_active GROUP BY 1 ORDER BY 1"
-    call_tool("switch_source", {"source": "duckdb"})
-    rows_d = run_sql(q)["rows"]
-    call_tool("switch_source", {"source": "jsonl"})
-    rows_j = run_sql(q)
-    assert rows_j["cached"] is False
-    assert rows_j["rows"] == rows_d
-    assert sql_cache_stats()["entries"] == 2
-    # Reset for any later tests.
-    call_tool("switch_source", {"source": "duckdb"})
-
-
-def test_clear_sql_cache_empties():
-    """clear_sql_cache must drop every entry."""
-    clear_sql_cache()
-    run_sql("SELECT 1 AS n")
-    run_sql("SELECT 2 AS n")
-    assert sql_cache_stats()["entries"] == 2
-    clear_sql_cache()
-    assert sql_cache_stats()["entries"] == 0
 
 
 # ---------------------------------------------------------------------- file-system safety
