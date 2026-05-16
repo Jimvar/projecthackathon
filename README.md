@@ -93,9 +93,13 @@ answer. Built for the SmartRep Makeathon — Phases 0, 1, 2, 3, and 4.
 
 ## Setup
 
+Python 3.10 or newer.
+
 ```bash
-# Install deps
-uv sync          # or: pip install -e .
+# Pick one:
+uv sync                              # uses uv.lock for reproducible installs
+pip install -e .                     # editable install via setuptools
+pip install -r requirements.txt      # dependency-only install (no editable)
 
 # Configure Gemini
 cp .env.example .env

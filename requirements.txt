@@ -1,0 +1,14 @@
+# Plain pip install path: `pip install -r requirements.txt`
+# Mirrors the runtime deps in pyproject.toml. The lockfile (uv.lock)
+# is the source of truth for reproducible installs.
+
+duckdb>=1.0.0
+streamlit>=1.36
+plotly>=5.22
+pandas>=2.2
+python-dotenv>=1.0
+sqlglot>=25.0
+google-genai>=0.3
+openai>=1.40
+pyyaml>=6.0
+mcp>=1.0
