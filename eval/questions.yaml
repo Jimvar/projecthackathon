@@ -1,0 +1,168 @@
+# Evaluation question set for NR2Dashboard.
+#
+# Each entry has:
+#   id:        short stable handle
+#   q:         the user-facing question (English or Greek)
+#   shape:     distribution | trend | ranking | comparison | anomaly | open_ended
+#   language:  en | el
+#   notes:     human notes; not consumed by the harness
+#
+# The first ten are also covered by `golden.yaml` with hand-written SQL +
+# expected numeric values, so Stream D's pytest can verify the formulas.
+
+- id: q01_pie_languages
+  q: "Show me a pie chart of Greek vs English users."
+  shape: distribution
+  language: en
+  notes: Verbatim from BRIEF.md. Must produce a pie/donut, two slices.
+
+- id: q02_health_this_week
+  q: "How is the bot doing this week?"
+  shape: open_ended
+  language: en
+  notes: Verbatim from BRIEF.md. Should surface containment/CSAT/AHT + trend.
+
+- id: q03_containment_by_intent_week
+  q: "Show me containment rate by intent type this week."
+  shape: ranking
+  language: en
+  notes: PPTX slide example. Bar with threshold-color rule (purple ≥85% / orange below).
+
+- id: q04_outcome_breakdown
+  q: "Break down conversations by outcome."
+  shape: distribution
+  language: en
+
+- id: q05_csat_trend_30d
+  q: "Plot daily CSAT for the last 30 days."
+  shape: trend
+  language: en
+
+- id: q06_top10_intents_aht
+  q: "Top 10 intents by AHT, slowest first."
+  shape: ranking
+  language: en
+
+- id: q07_worst_day_tool_success
+  q: "Which day in the last 90 had the worst tool success rate?"
+  shape: anomaly
+  language: en
+
+- id: q08_v230_auth
+  q: "Did the v2.3.0 release help authentication-completed pass rate?"
+  shape: comparison
+  language: en
+
+- id: q09_donut_style_override
+  q: "Show me a donut chart of conversations by segment, with blue colors."
+  shape: distribution
+  language: en
+  notes: Style-override smoke test.
+
+- id: q10_top5_regions
+  q: "Top 5 regions by call volume, sorted descending."
+  shape: ranking
+  language: en
+
+- id: q11_greek_aht_by_region
+  q: "Δείξε μου τον μέσο χρόνο κλήσης ανά περιοχή."
+  shape: ranking
+  language: el
+  notes: Greek smoke test — AHT by region, bar.
+
+- id: q12_greek_csat_month
+  q: "Πώς πάει το CSAT αυτόν τον μήνα;"
+  shape: trend
+  language: el
+
+- id: q13_greek_volume_week
+  q: "Πόσα τηλεφωνήματα είχαμε αυτή την εβδομάδα;"
+  shape: trend
+  language: el
+
+- id: q14_greek_escalations_by_segment
+  q: "Ποιο segment έχει το υψηλότερο escalation rate;"
+  shape: ranking
+  language: el
+
+- id: q15_greek_outcome_pie
+  q: "Δείξε μου τα outcomes σαν donut."
+  shape: distribution
+  language: el
+
+- id: q16_greek_negative_sentiment
+  q: "Πόσο συχνά εμφανίζεται αρνητικό συναίσθημα στους χρήστες;"
+  shape: distribution
+  language: el
+
+- id: q17_hourly_volume
+  q: "What hour of the day is busiest?"
+  shape: trend
+  language: en
+
+- id: q18_dow_seasonality
+  q: "How does call volume vary by day of week?"
+  shape: trend
+  language: en
+
+- id: q19_premium_vs_new_csat
+  q: "Compare CSAT between premium and new segments."
+  shape: comparison
+  language: en
+
+- id: q20_abandonment_by_region
+  q: "Abandonment rate by region."
+  shape: ranking
+  language: en
+
+- id: q21_top_tools_by_failures
+  q: "Top 10 tools with the most failed calls."
+  shape: ranking
+  language: en
+
+- id: q22_anomaly_promised_callback
+  q: "Has the promised_callback rate jumped recently?"
+  shape: anomaly
+  language: en
+  notes: Should surface the incident window where it climbs to ~25%.
+
+- id: q23_biometric_auth_share
+  q: "What share of authentications used biometric, before vs after v2.3.0?"
+  shape: comparison
+  language: en
+
+- id: q24_pii_fail_by_version
+  q: "PII handling failure rate by bot version."
+  shape: comparison
+  language: en
+
+- id: q25_tool_latency_p95
+  q: "p95 latency for each tool."
+  shape: ranking
+  language: en
+
+- id: q26_intent_csat_bottom
+  q: "Which 5 intents have the worst CSAT?"
+  shape: ranking
+  language: en
+
+- id: q27_cost_per_resolved
+  q: "What is the cost per resolved call?"
+  shape: open_ended
+  language: en
+
+- id: q28_repeat_caller
+  q: "Repeat caller rate over the full window."
+  shape: open_ended
+  language: en
+
+- id: q29_intent_complaint_rate
+  q: "Top 10 intents by complaint rate."
+  shape: ranking
+  language: en
+
+- id: q30_revenue_unknown
+  q: "What's our revenue per call?"
+  shape: open_ended
+  language: en
+  notes: There is no revenue column; system should clarify rather than invent one.
