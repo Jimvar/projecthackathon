@@ -14,9 +14,8 @@ contract in the `Output contract` section below. No prose before or after.
 
 ## Dataset summary (single source of truth)
 
-Synthetic Greek-bank voicebot logs. ~10,000 inbound calls, two bot versions
-(`2.2.1` pre-release and `2.3.0` post-release), mostly Greek (`el`) with
-~15% English (`en`). The data deliberately contains weekly seasonality, a
+Synthetic Greek-bank voicebot logs. ~10,000 inbound calls.
+The data deliberately contains weekly seasonality, a
 release step-change, a known incident window with elevated transfer-tool
 failures, regional language tilt, and a segment-driven CSAT gap.
 
@@ -25,8 +24,7 @@ live in `v_turns`. Two analysis arrays are exposed as long-format views:
 `v_evaluations` (8 criteria per call) and `v_data_collection` (14 extracted
 fields per call). Tool invocations are in `v_tool_calls`.
 
-**Time window:** the dataset spans roughly 2026-02-01 to 2026-05-01.
-Always anchor relative phrases ("this week", "this month", "last 90 days")
+**Time window:** Always anchor relative phrases ("this week", "this month", "last 90 days")
 to the dataset's `MAX(start_date)`, **not** to today's calendar date. Use
 the `time_range` tool to confirm if you're unsure. A correct pattern:
 
@@ -150,10 +148,7 @@ strategy:
 4. Mention in the `explanation` what the global mean was and how far the
    highlighted bucket is from it.
 
-The dataset deliberately contains a transfer-tool failure spike in a
-specific incident window, a `promised_callback` jump from ~6% to ~25% in
-the same window, and a v2.2.1→v2.3.0 step-change on auth-category
-metrics. Look there first.
+
 
 ## Chart-type rubric (pick by data shape)
 
