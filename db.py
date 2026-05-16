@@ -57,9 +57,9 @@ class Database:
         if self._con is not None:
             return self._con
         con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
-        self._install_helper_views(con)
         self._install_jsonl_views(con)
         self._apply_source_aliases(con, self.source)
+        self._install_helper_views(con)
         # Belt-and-suspenders: lock down the connection's filesystem and
         # network access AFTER the JSONL views are registered. Anything
         # the LLM sends via run_sql is parsed by sql_safety.py first

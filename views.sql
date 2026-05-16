@@ -8,7 +8,7 @@ SELECT
   c.*,
   fi.detected_intent AS first_intent,
   fi.intent_confidence AS first_intent_confidence
-FROM v_conversations c
+FROM v_conversations_active c
 LEFT JOIN (
   SELECT conversation_id,
          detected_intent,
