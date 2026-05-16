@@ -35,7 +35,8 @@ class _Script:
     model: str = "stub"
 
     def generate(self, messages, force_text=False):  # noqa: D401, ARG002
-        self.seen.append(messages)
+        # Snapshot — the orchestrator mutates `messages` after we return.
+        self.seen.append([dict(m) for m in messages])
         return self.responses.pop(0)
 
 
@@ -105,9 +106,115 @@ def test_orchestrator_auto_injects_metric_hint():
         "explanation": "Containment is X.",
     }
     script = _Script(seen=[], responses=[LLMResponse(text=json.dumps(contract), tool_calls=[], raw=None)])
-    orch = Orchestrator(client=script)  # type: ignore[arg-type]
+    orch = Orchestrator(client=script, write_log=False)  # type: ignore[arg-type]
     orch.run("What's our containment rate?")
 
     sent_user_text = next(m["text"] for m in script.seen[0] if m["role"] == "user")
     assert "metric reference" in sent_user_text
     assert "containment_rate" in sent_user_text
+
+
+def test_orchestrator_replays_prior_contract_for_followups():
+    """Follow-up turns must see the prior model contract so the LLM can
+    edit it minimally (Phase 3 conversation memory)."""
+    prior_sql = "SELECT segment, COUNT(*) AS n FROM v_conversations GROUP BY 1 ORDER BY 2 DESC"
+    prior_chart = {"type": "bar", "x": "segment", "y": "n"}
+
+    followup_contract = {
+        "sql": "SELECT segment, main_language, COUNT(*) AS n FROM v_conversations GROUP BY 1, 2 ORDER BY 1, 2",
+        "chart": {"type": "bar", "x": "segment", "y": "n", "series": "main_language"},
+        "explanation": "Now split by language.",
+    }
+    script = _Script(seen=[], responses=[LLMResponse(text=json.dumps(followup_contract), tool_calls=[], raw=None)])
+    orch = Orchestrator(client=script, write_log=False)  # type: ignore[arg-type]
+
+    history = [
+        {"role": "user", "text": "Break down conversations by segment."},
+        {"role": "assistant", "sql": prior_sql, "chart": prior_chart, "explanation": "Premium etc."},
+    ]
+    orch.run("Now break that down by language.", history=history)
+
+    # The model should have seen the prior assistant contract verbatim
+    # (so it knows what SQL to edit) and the new user turn last.
+    sent = script.seen[0]
+    assert any(m["role"] == "model" and prior_sql in m["text"] for m in sent), (
+        "prior model contract was not replayed to the LLM"
+    )
+    assert sent[-1]["role"] == "user"
+    assert "break that down by language" in sent[-1]["text"].lower()
+
+
+def test_orchestrator_trims_history_to_max_turns():
+    """A 30-turn session should only forward the last MAX_HISTORY_TURNS entries."""
+    from orchestrator import MAX_HISTORY_TURNS
+
+    script = _Script(
+        seen=[],
+        responses=[
+            LLMResponse(
+                text=json.dumps({
+                    "sql": "SELECT 1 AS n",
+                    "chart": {"type": "kpi", "y": "n", "title": "x"},
+                    "explanation": "ok",
+                }),
+                tool_calls=[],
+                raw=None,
+            )
+        ],
+    )
+    orch = Orchestrator(client=script, write_log=False)  # type: ignore[arg-type]
+
+    history: list[dict] = []
+    for i in range(30):
+        history.append({"role": "user", "text": f"q{i}"})
+        history.append({
+            "role": "assistant",
+            "sql": f"SELECT {i}",
+            "chart": {"type": "kpi", "y": "n"},
+            "explanation": f"a{i}",
+        })
+
+    orch.run("latest question", history=history)
+    sent = script.seen[0]
+    # +1 for the new user turn that we just added.
+    assert len(sent) == MAX_HISTORY_TURNS + 1, (
+        f"expected {MAX_HISTORY_TURNS + 1} messages, got {len(sent)}"
+    )
+
+
+def test_orchestrator_writes_turn_log(tmp_path, monkeypatch):
+    """Each run should append one JSON line to today's logs/ file."""
+    import turn_log
+
+    monkeypatch.setattr(turn_log, "LOG_DIR", tmp_path)
+
+    script = _Script(
+        seen=[],
+        responses=[
+            LLMResponse(
+                text=json.dumps({
+                    "sql": "SELECT 1 AS n",
+                    "chart": {"type": "kpi", "y": "n", "title": "x"},
+                    "explanation": "ok",
+                }),
+                tool_calls=[],
+                raw=None,
+            )
+        ],
+    )
+    orch = Orchestrator(client=script)  # type: ignore[arg-type]
+    orch.run("hello world")
+
+    files = list(tmp_path.glob("turns-*.jsonl"))
+    assert len(files) == 1, files
+    lines = files[0].read_text().strip().splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert rec["user_message"] == "hello world"
+    assert rec["sql"] == "SELECT 1 AS n"
+    assert rec["chart_spec"]["type"] == "kpi"
+    assert rec["explanation"] == "ok"
+    assert rec["error"] == ""
+    assert isinstance(rec["latency_ms"], int)
+    assert "ts" in rec
+    assert "source" in rec

@@ -166,3 +166,72 @@
   shape: open_ended
   language: en
   notes: There is no revenue column; system should clarify rather than invent one.
+
+# --- Phase 3 follow-up chains ------------------------------------------------
+
+- id: q31_followup_split_lang
+  q: "Now break that down by language."
+  shape: comparison
+  language: en
+  followup_to: q01_pie_languages
+  notes: Should reuse prior SQL and add main_language as a series dimension.
+
+- id: q32_followup_change_chart
+  q: "Show that as a line chart instead."
+  shape: trend
+  language: en
+  followup_to: q05_csat_trend_30d
+  notes: Should reuse prior SQL and only flip chart.type.
+
+- id: q33_followup_last_7
+  q: "Only the last 7 days."
+  shape: trend
+  language: en
+  followup_to: q18_dow_seasonality
+  notes: Should add a date-window WHERE clause anchored to MAX(start_date).
+
+# --- Phase 3 anomaly hunts ---------------------------------------------------
+
+- id: q34_anomaly_tool_success
+  q: "Anything weird about tool success rate in the last 90 days?"
+  shape: anomaly
+  language: en
+  notes: Should surface the incident-window dip with mean/stddev or rolling stats.
+
+- id: q35_anomaly_promised_callback_jump
+  q: "When did promised_callback spike?"
+  shape: anomaly
+  language: en
+  notes: Should surface the ~6% baseline → ~25% during the incident window.
+
+# --- Phase 3 adversarial / edge cases ---------------------------------------
+
+- id: q36_typo_containmnet
+  q: "Whats are containmnet rate this weak?"
+  shape: open_ended
+  language: en
+  notes: Misspelled "containment" and "week" — model should still answer.
+
+- id: q37_no_nps_column
+  q: "What's our NPS score?"
+  shape: open_ended
+  language: en
+  notes: NPS doesn't exist in the dataset; system should clarify, not invent.
+
+- id: q38_ambiguous_lately
+  q: "How are things going lately?"
+  shape: open_ended
+  language: en
+  notes: '"lately" is ambiguous — the model can pick a sensible window and say so.'
+
+- id: q39_greek_followup_anomaly
+  q: "Ποια μέρα δείχνει κάτι περίεργο τον τελευταίο μήνα;"
+  shape: anomaly
+  language: el
+  notes: Greek anomaly hunt — should detect Greek and answer in Greek.
+
+- id: q40_out_of_window
+  q: "Compare 2024 to 2025."
+  shape: comparison
+  language: en
+  notes: Dataset is 2026; system should explain the time window or return empty with caveat.

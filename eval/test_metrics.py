@@ -94,7 +94,7 @@ def test_containment_equals_outcome_resolved(db):
 # ---------------------------------------------------------------------- helper views
 
 def test_helper_views_present(db):
-    for v in ("v_conv_with_intent", "v_eval_pivot", "v_dc_pivot", "v_conversations_active"):
+    for v in ("v_conv_with_intent", "v_eval_pivot", "v_conv_with_dc", "v_conversations_active"):
         n = db.execute(f"SELECT COUNT(*) FROM {v}").fetchone()[0]
         assert n > 0, f"{v} returned zero rows"
 
@@ -108,6 +108,55 @@ def test_eval_pivot_columns(db):
         "tool_call_success_rate",
     }
     assert expected.issubset(cols), f"missing eval pivot cols: {expected - set(cols)}"
+
+
+def test_conv_with_dc_columns(db):
+    cols = [c[0] for c in db.execute("DESCRIBE v_conv_with_dc").fetchall()]
+    expected = {
+        "auth_method_used", "transfer_amount_bucket", "promised_callback",
+        "complaint_detected", "self_service_completed", "topic_tags",
+    }
+    assert expected.issubset(cols), f"missing dc pivot cols: {expected - set(cols)}"
+
+
+# ---------------------------------------------------------------------- new exploration tools
+
+def test_value_counts_returns_sorted_distinct():
+    res = call_tool("value_counts", {"table": "v_conversations", "column": "main_language"})
+    assert "error" not in res, res
+    assert res["distinct_values"] == 2
+    counts = [v["count"] for v in res["values"]]
+    assert counts == sorted(counts, reverse=True), "value_counts must be sorted desc"
+    assert {v["value"] for v in res["values"]} == {"el", "en"}
+
+
+def test_value_counts_rejects_bad_identifier():
+    res = call_tool("value_counts", {"table": "v c", "column": "x"})
+    assert "error" in res
+
+
+def test_value_counts_truncates_to_top_n():
+    res = call_tool(
+        "value_counts",
+        {"table": "v_conversations", "column": "region", "top_n": 2},
+    )
+    assert "error" not in res
+    assert len(res["values"]) == 2
+    assert res["truncated"] is True
+
+
+def test_time_range_matches_dataset_window():
+    res = call_tool("time_range", {"table": "v_conversations", "column": "start_time"})
+    assert "error" not in res
+    assert res["min"] < res["max"]
+    assert res["row_count"] == 10_000
+    assert res["non_null_count"] == 10_000
+
+
+def test_time_range_default_column():
+    res = call_tool("time_range", {"table": "v_conversations"})
+    assert "error" not in res
+    assert res["column"] == "start_time"
 
 
 # ---------------------------------------------------------------------- safety layer
@@ -156,3 +205,41 @@ def test_switch_source_round_trip():
         "SELECT main_language, COUNT(*) FROM v_conversations_active GROUP BY 1 ORDER BY 1"
     )["rows"]
     assert rows_jsonl == rows_duckdb, "same query should produce the same answer on both sources"
+
+
+# ---------------------------------------------------------------------- Phase 3 / rules
+
+def test_no_hardcoded_dispatch_in_source():
+    """The brief forbids hand-built NL-to-result lookup tables.
+
+    Static check: no production module may contain the `hardcoded_dispatch`
+    pattern from the example repo's starter, nor a HARDCODED_RESPONSES
+    table. The check skips this test file itself (which has to mention
+    the strings to look for them).
+    """
+    # Build the needles dynamically so the test file's own source doesn't
+    # match against itself even if grep is used on the repo.
+    needles = ("hardcoded" + "_dispatch", "HARDCODED" + "_RESPONSES")
+    py_files = [
+        p for p in ROOT.rglob("*.py")
+        if ".venv" not in p.parts and p.name not in {"test_metrics.py"}
+    ]
+    for path in py_files:
+        text = path.read_text()
+        for needle in needles:
+            assert needle not in text, f"{path}: contains banned pattern {needle!r}"
+
+
+def test_questions_yaml_has_required_shapes():
+    """All five PPTX shapes plus the Phase-3 anomaly hunts must be present."""
+    qs = yaml.safe_load((ROOT / "eval" / "questions.yaml").read_text())
+    shapes = {q["shape"] for q in qs}
+    expected = {
+        "distribution", "trend", "ranking", "comparison",
+        "anomaly", "open_ended",
+    }
+    assert expected.issubset(shapes), f"missing shapes: {expected - shapes}"
+    greek = [q for q in qs if q["language"] == "el"]
+    assert len(greek) >= 6, f"need ≥6 Greek questions, have {len(greek)}"
+    followups = [q for q in qs if q.get("followup_to")]
+    assert len(followups) >= 2, f"need ≥2 follow-up questions, have {len(followups)}"

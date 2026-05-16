@@ -25,6 +25,8 @@ from mcp_tools import (
     run_sql,
     sample_rows,
     switch_source,
+    time_range,
+    value_counts,
 )
 
 mcp = FastMCP(
@@ -72,6 +74,27 @@ def t_get_metric_definition(name: str) -> dict:
 @mcp.tool(description="Return up to N rows of a table for quick inspection.")
 def t_sample_rows(table: str, n: int = 5) -> dict:
     return sample_rows(table, n)
+
+
+@mcp.tool(
+    description=(
+        "Return the distinct values of a column and how often each occurs. "
+        "Use this to discover categories before writing a GROUP BY."
+    )
+)
+def t_value_counts(table: str, column: str, top_n: int = 20) -> dict:
+    return value_counts(table, column, top_n)
+
+
+@mcp.tool(
+    description=(
+        "Return min/max/count for a timestamp column. Use this to anchor "
+        "relative date phrases (\"this week\", \"last quarter\") to the "
+        "dataset's actual time window."
+    )
+)
+def t_time_range(table: str, column: str = "start_time") -> dict:
+    return time_range(table, column)
 
 
 @mcp.tool(
