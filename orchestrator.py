@@ -266,6 +266,13 @@ class Orchestrator:
                 {"name": tc.name, "arguments": tc.arguments, "id": tc.id}
                 for tc in resp.tool_calls
             ]
+        # Carry Gemini's original parts through so the next request can
+        # echo back the thought_signature bytes on each function_call.
+        # Gemini 3 rejects round-trips that drop these. Other providers
+        # ignore this key.
+        raw_parts = getattr(resp, "raw_parts", None)
+        if raw_parts:
+            msg["_gemini_parts"] = raw_parts
         return msg
 
 
