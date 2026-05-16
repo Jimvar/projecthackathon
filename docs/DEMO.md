@@ -1,7 +1,7 @@
 # 5-minute demo script
 
 Rehearse twice before showtime. Run `scripts/preflight.py` once before
-opening Streamlit so the SQL cache is warm and the answers come back fast.
+opening Streamlit to confirm every flagship question still passes.
 
 ---
 
@@ -88,7 +88,7 @@ Type *"Anything weird about tool success in the last 90 days?"*
 # Sanity (no API call needed)
 uv run pytest eval/ -q
 
-# Hot-cache the queries you'll demo (~60 s)
+# Verify every flagship question still passes (~60 s)
 uv run python scripts/preflight.py
 
 # Boot

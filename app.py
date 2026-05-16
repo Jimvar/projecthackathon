@@ -11,7 +11,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from db import get_db
-from mcp_tools import call_tool, clear_sql_cache, sql_cache_stats
+from mcp_tools import call_tool
 from orchestrator import Orchestrator
 from renderer import choose_layout, render_panels
 
@@ -100,16 +100,10 @@ def _sidebar() -> None:
     orch = _orchestrator_singleton()
     st.sidebar.text(f"Provider: {orch.client.provider}")
     st.sidebar.text(f"Model: {orch.client.model}")
-    cache = sql_cache_stats()
-    st.sidebar.text(f"SQL cache: {cache['entries']}/{cache['capacity']}")
 
     st.sidebar.divider()
-    btn_cols = st.sidebar.columns(2)
-    if btn_cols[0].button("Clear chat", use_container_width=True):
+    if st.sidebar.button("Clear conversation", use_container_width=True):
         _reset_history()
-        st.rerun()
-    if btn_cols[1].button("Clear cache", use_container_width=True):
-        clear_sql_cache()
         st.rerun()
 
     with st.sidebar.expander("Schema cheatsheet", expanded=False):
