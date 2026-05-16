@@ -3,13 +3,10 @@
 Stitches together:
 
 * The system prompt (loaded from `prompts/system.md`),
-* The six MCP tools (called in-process via `mcp_tools.call_tool`),
+* The MCP tools (called in-process via `mcp_tools.call_tool`),
 * Conversation memory (caller-supplied list of past turns),
-* The JSON output contract.
-
-For Phase 1 we run the tool loop in-process. `mcp_server.py` exists as a
-separate process the orchestrator could be switched onto later — the
-function-call shape is identical.
+* The JSON output contract,
+* Per-turn JSONL logging.
 """
 
 from __future__ import annotations
@@ -21,11 +18,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from llm_client import LLMClient, ToolCall
+from llm_client import LLMClient
 from mcp_tools import TOOL_REGISTRY, call_tool
+from turn_log import log_turn
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "prompts" / "system.md"
-MAX_TOOL_HOPS = 6  # safety stop for the tool-use loop
+MAX_TOOL_HOPS = 6        # safety stop for the tool-use loop
+MAX_HISTORY_TURNS = 12   # last N history entries forwarded to the LLM (6 exchanges)
 
 
 # Keywords that should trigger auto-injection of the relevant metric definition.
@@ -95,11 +94,12 @@ class Orchestrator:
     Holds an `LLMClient` configured with the project's system prompt + tools.
     """
 
-    def __init__(self, client: LLMClient | None = None) -> None:
+    def __init__(self, client: LLMClient | None = None, *, write_log: bool = True) -> None:
         self.client = client or LLMClient(
             tools=_tool_specs_for_gemini(),
             system_instruction=_system_prompt(),
         )
+        self.write_log = write_log
 
     # ------------------------------------------------------------------ turn
 
@@ -143,20 +143,43 @@ class Orchestrator:
             log.error = f"tool-use loop exceeded {MAX_TOOL_HOPS} hops"
 
         log.latency_ms = int((time.monotonic() - t_start) * 1000)
+
+        if self.write_log:
+            try:
+                from db import get_db  # local import — avoids circular at module load
+                source = get_db().source
+            except Exception:
+                source = "unknown"
+            log_turn({
+                "source": source,
+                "user_message": user_message,
+                "sql": log.sql,
+                "chart_spec": log.chart_spec,
+                "explanation": log.explanation,
+                "error": log.error,
+                "latency_ms": log.latency_ms,
+                "tool_calls": log.tool_calls,
+            })
+
         return log
 
     # ------------------------------------------------------------------ message building
 
     def _build_messages(self, user_message: str, history: list[dict]) -> list[dict]:
         msgs: list[dict] = []
-        for h in history:
+        # Trim history to the last MAX_HISTORY_TURNS exchanges (keeps Gemini's
+        # context bounded over long sessions while still letting it reuse the
+        # most recent SQL / chart spec when the user says "now break that down…").
+        recent = history[-MAX_HISTORY_TURNS:] if history else []
+        for h in recent:
             role = h.get("role")
             if role == "user":
                 msgs.append({"role": "user", "text": h["text"]})
             elif role in ("assistant", "model"):
-                # Replay the final contract — Gemini only needs the text part
-                # plus any function_calls it actually made. For Phase 1, we
-                # collapse to the rendered JSON so follow-ups can reference it.
+                # Replay the final contract so the model can see the last
+                # SQL it ran and the chart it produced. Follow-up questions
+                # like "show that as a line" or "now by language" only work
+                # if the prior contract is in the context.
                 contract = {
                     "sql": h.get("sql", ""),
                     "chart": h.get("chart", {}),

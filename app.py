@@ -161,6 +161,16 @@ def _render_assistant_turn(turn: dict) -> None:
     if sql:
         with st.expander("Show SQL"):
             st.code(sql, language="sql")
+    # Copy-as-markdown panel: turns the answer + SQL into one
+    # paste-ready block for sharing on Slack / a ticket / a PR.
+    if turn.get("explanation") or sql:
+        with st.expander("Copy as Markdown"):
+            md_parts: list[str] = []
+            if turn.get("explanation"):
+                md_parts.append(turn["explanation"])
+            if sql:
+                md_parts.append(f"```sql\n{sql.strip()}\n```")
+            st.code("\n\n".join(md_parts), language="markdown")
 
 
 def _replay_history() -> None:
@@ -184,6 +194,13 @@ def main() -> None:
     st.caption(
         "Ask the voicebot dataset anything — in English or Greek. "
         "Try: *Show me a pie chart of Greek vs English users.*"
+    )
+    # Active-source banner — Phase 3 makes the multi-source toggle
+    # visible mid-conversation so a judge can see when it changes.
+    orch = _orchestrator_singleton()
+    st.markdown(
+        f"**Source:** `{st.session_state.active_source}` &nbsp;·&nbsp; "
+        f"**Model:** `{orch.client.model}`"
     )
     _scope_bar()
 

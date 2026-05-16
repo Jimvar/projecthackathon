@@ -205,3 +205,41 @@ def test_switch_source_round_trip():
         "SELECT main_language, COUNT(*) FROM v_conversations_active GROUP BY 1 ORDER BY 1"
     )["rows"]
     assert rows_jsonl == rows_duckdb, "same query should produce the same answer on both sources"
+
+
+# ---------------------------------------------------------------------- Phase 3 / rules
+
+def test_no_hardcoded_dispatch_in_source():
+    """The brief forbids hand-built NL-to-result lookup tables.
+
+    Static check: no production module may contain the `hardcoded_dispatch`
+    pattern from the example repo's starter, nor a HARDCODED_RESPONSES
+    table. The check skips this test file itself (which has to mention
+    the strings to look for them).
+    """
+    # Build the needles dynamically so the test file's own source doesn't
+    # match against itself even if grep is used on the repo.
+    needles = ("hardcoded" + "_dispatch", "HARDCODED" + "_RESPONSES")
+    py_files = [
+        p for p in ROOT.rglob("*.py")
+        if ".venv" not in p.parts and p.name not in {"test_metrics.py"}
+    ]
+    for path in py_files:
+        text = path.read_text()
+        for needle in needles:
+            assert needle not in text, f"{path}: contains banned pattern {needle!r}"
+
+
+def test_questions_yaml_has_required_shapes():
+    """All five PPTX shapes plus the Phase-3 anomaly hunts must be present."""
+    qs = yaml.safe_load((ROOT / "eval" / "questions.yaml").read_text())
+    shapes = {q["shape"] for q in qs}
+    expected = {
+        "distribution", "trend", "ranking", "comparison",
+        "anomaly", "open_ended",
+    }
+    assert expected.issubset(shapes), f"missing shapes: {expected - shapes}"
+    greek = [q for q in qs if q["language"] == "el"]
+    assert len(greek) >= 6, f"need ≥6 Greek questions, have {len(greek)}"
+    followups = [q for q in qs if q.get("followup_to")]
+    assert len(followups) >= 2, f"need ≥2 follow-up questions, have {len(followups)}"

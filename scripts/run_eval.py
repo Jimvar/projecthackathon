@@ -114,6 +114,9 @@ def main() -> int:
     by_shape: dict[str, dict[str, int]] = {}
     started = datetime.utcnow()
 
+    # Cache prior turn logs by id so follow-up questions can see them.
+    prior_turn: dict[str, object] = {}
+
     with args.out.open("w") as f:
         for i, q in enumerate(questions, 1):
             qid = q["id"]
@@ -121,9 +124,30 @@ def main() -> int:
             shape = q.get("shape", "?")
             lang = q.get("language", "?")
 
+            # Wire follow-up history if this question references a prior id.
+            history = None
+            parent_id = q.get("followup_to")
+            if parent_id:
+                parent = prior_turn.get(parent_id)
+                if parent is not None:
+                    parent_q = next(
+                        (pq["q"] for pq in questions if pq["id"] == parent_id),
+                        "",
+                    )
+                    history = [
+                        {"role": "user", "text": parent_q},
+                        {
+                            "role": "assistant",
+                            "sql": parent.sql,
+                            "chart": parent.chart_spec or {},
+                            "explanation": parent.explanation,
+                        },
+                    ]
+
             try:
-                turnlog = orch.run(text)
+                turnlog = orch.run(text, history=history)
                 status, reason = _tag(turnlog)
+                prior_turn[qid] = turnlog
             except Exception as e:
                 turnlog = None
                 status, reason = "fail", f"exception: {e}"

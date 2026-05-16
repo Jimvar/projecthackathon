@@ -3,7 +3,7 @@
 Natural-language → dashboard over the SmartRep banking-voicebot dataset.
 
 Type a question in English or Greek; get back a Plotly chart and a plain-language
-answer. Built for the SmartRep Makeathon — Phases 0, 1, and 2.
+answer. Built for the SmartRep Makeathon — Phases 0, 1, 2, and 3.
 
 ## Architecture
 
@@ -59,7 +59,7 @@ answer. Built for the SmartRep Makeathon — Phases 0, 1, and 2.
 ```
 .
 ├── app.py                       # Streamlit entry point
-├── orchestrator.py              # LLM tool-use loop
+├── orchestrator.py              # LLM tool-use loop (+ per-turn JSONL logging)
 ├── llm_client.py                # Thin Gemini abstraction
 ├── mcp_server.py                # MCP server (stdio / http) wrapping mcp_tools
 ├── mcp_tools.py                 # The 8 tool implementations
@@ -67,6 +67,7 @@ answer. Built for the SmartRep Makeathon — Phases 0, 1, and 2.
 ├── sql_safety.py                # SELECT/WITH-only validator (sqlglot)
 ├── renderer.py                  # Chart spec → Plotly figure
 ├── views.sql                    # Helper views for hot joins
+├── turn_log.py                  # Per-turn JSONL logger (logs/turns-YYYY-MM-DD.jsonl)
 ├── prompts/system.md            # Locked-down system prompt (incl. few-shots)
 ├── eval/
 │   ├── questions.yaml           # 30 eval questions across all shapes/languages
@@ -151,6 +152,29 @@ uv run pytest eval/ -q
   exceptions all surface in the chat instead of failing silently.
 - `scripts/run_eval.py` — runs all 30 questions, tags pass/partial/fail,
   writes JSONL log, prints by-shape summary.
+
+### Phase 3 — Conversation memory & multi-source bonus
+- Orchestrator now caps replayed history at `MAX_HISTORY_TURNS = 12`
+  entries (6 exchanges) so long sessions don't blow Gemini's context.
+- Each model reply is replayed as a JSON contract so follow-up questions
+  ("now break that down by language", "show that as a line chart",
+  "only the last 7 days") let Gemini edit the prior SQL minimally.
+- New system-prompt sections: **Follow-up handling** with a table of common
+  refinements and **Anomaly-hunt mode** pointing at the embedded
+  patterns (incident window, v2.2.1→v2.3.0 step-change, regional tilt).
+- Two new few-shots: a follow-up chain demonstrating SQL reuse, and an
+  anomaly hunt that surfaces the tool-success incident window.
+- **Per-turn JSONL logger** (`turn_log.py`) — every `Orchestrator.run()`
+  appends `{ts, source, user_message, sql, chart_spec, explanation,
+  error, latency_ms, tool_calls}` to `logs/turns-YYYY-MM-DD.jsonl`.
+- Streamlit shell: active-source banner above the chat (so a judge can
+  see when the data source toggles mid-conversation), and a per-turn
+  "Copy as Markdown" panel for pasting answers into Slack/PRs/tickets.
+- Eval set grew 30 → 40 questions: 3 follow-up chains, 2 anomaly hunts,
+  5 adversarial cases (typos, no-NPS clarification, ambiguous "lately",
+  out-of-window comparison, Greek anomaly hunt).
+- Static guard (`test_no_hardcoded_dispatch_in_source`) prevents the
+  example repo's banned NL-to-SQL lookup pattern from sneaking back in.
 
 ## Hard rules honored
 
