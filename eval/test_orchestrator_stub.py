@@ -372,6 +372,34 @@ def test_gemini_preserves_thought_signature_on_round_trip():
     assert model_turn.parts[0].function_call.name == "time_range"
 
 
+def test_gemini_coalesces_parallel_tool_responses():
+    """When the model emits N parallel function_calls in one turn,
+    the next user Content must hold N function_response parts. Gemini
+    rejects mismatched counts with INVALID_ARGUMENT."""
+    from google.genai import types
+
+    from llm_client import _to_gemini_contents
+
+    contents = _to_gemini_contents([
+        {"role": "user", "text": "stats by language and segment"},
+        {"role": "model", "tool_calls": [
+            {"name": "run_sql", "arguments": {"query": "SELECT 1"}, "id": "a"},
+            {"name": "run_sql", "arguments": {"query": "SELECT 2"}, "id": "b"},
+        ]},
+        {"role": "tool", "name": "run_sql", "tool_call_id": "a",
+         "response": {"rows": [[1]]}},
+        {"role": "tool", "name": "run_sql", "tool_call_id": "b",
+         "response": {"rows": [[2]]}},
+    ])
+    model_turn = next(c for c in contents if c.role == "model")
+    tool_turn = contents[-1]
+    assert tool_turn.role == "user"
+    fc_count = sum(1 for p in model_turn.parts if p.function_call)
+    fr_count = sum(1 for p in tool_turn.parts if p.function_response)
+    assert fc_count == 2
+    assert fr_count == 2
+
+
 def test_gemini_reconstruct_when_no_raw_parts_present():
     """Test stubs (and the OpenAI provider's outputs) don't supply
     `_gemini_parts`. In that case we still need to round-trip a usable
