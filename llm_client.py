@@ -21,6 +21,10 @@ GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
 OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
 
 
+def _truthy(v: str | None) -> bool:
+    return (v or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 @dataclass
 class ToolCall:
     name: str
@@ -78,7 +82,15 @@ class LLMClient:
             raise RuntimeError(
                 "GEMINI_API_KEY not set. Copy .env.example to .env and add your key."
             )
-        self._client = genai.Client(api_key=key)
+        # Keys minted in Google AI Studio talk to
+        # generativelanguage.googleapis.com (the default). Keys minted in
+        # Google Cloud / Vertex AI need vertexai=True so the SDK routes
+        # through Vertex's regional endpoint instead — otherwise the
+        # request comes back as `403 API_KEY_SERVICE_BLOCKED`. Set
+        # GEMINI_USE_VERTEX=true in .env when your key is Vertex-side.
+        use_vertex = _truthy(os.getenv("GEMINI_USE_VERTEX"))
+        self.use_vertex = use_vertex
+        self._client = genai.Client(api_key=key, vertexai=use_vertex)
         self.model = model or os.getenv("GEMINI_MODEL", GEMINI_DEFAULT_MODEL)
         self.system_instruction = system_instruction
         self._tools = self._compile_tools(tools or [])
