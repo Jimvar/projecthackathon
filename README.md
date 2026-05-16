@@ -3,7 +3,7 @@
 Natural-language → dashboard over the SmartRep banking-voicebot dataset.
 
 Type a question in English or Greek; get back a Plotly chart and a plain-language
-answer. Built for the SmartRep Makeathon — Phases 0, 1, 2, and 3.
+answer. Built for the SmartRep Makeathon — Phases 0, 1, 2, 3, and 4.
 
 ## Architecture
 
@@ -76,7 +76,13 @@ answer. Built for the SmartRep Makeathon — Phases 0, 1, 2, and 3.
 │   └── test_orchestrator_stub.py# Orchestrator wiring test (no LLM call)
 ├── scripts/
 │   ├── smoke.py                 # 5-question smoke against Gemini
+│   ├── preflight.py             # 60-s pre-demo check (one per shape + flagships)
 │   └── run_eval.py              # Full eval-suite runner with pass/partial/fail grid
+├── .streamlit/
+│   ├── config.toml              # Custom light theme (purple primary)
+│   └── secrets.toml.example     # Template for Streamlit Cloud secrets
+├── Dockerfile                   # Railway / HF Spaces / any container target
+├── docs/DEMO.md                 # 5-minute demo script (rehearse twice)
 ├── data/                        # Provided dataset — DO NOT MODIFY
 │   ├── conversations.duckdb
 │   ├── conversations.jsonl
@@ -111,6 +117,9 @@ uv run python mcp_server.py
 # 5-question smoke against Gemini
 uv run python scripts/smoke.py
 
+# 60-second pre-demo check (one question per shape + the brief's flagships)
+uv run python scripts/preflight.py
+
 # Full eval suite with pass/partial/fail grid
 uv run python scripts/run_eval.py
 uv run python scripts/run_eval.py --shape ranking
@@ -119,6 +128,42 @@ uv run python scripts/run_eval.py --language el
 # Metric-correctness + tool unit tests (no LLM needed)
 uv run pytest eval/ -q
 ```
+
+### Optional: switch to OpenAI
+
+For demo-day outage insurance, the orchestrator supports OpenAI as a
+drop-in alternative. Set both keys in `.env`, then flip the provider:
+
+```bash
+OPENAI_API_KEY=sk-...
+LLM_PROVIDER=openai   # default is "gemini"
+OPENAI_MODEL=gpt-4o-mini
+```
+
+The sidebar shows the active provider so the audience can see which
+brain is running.
+
+## Deploy
+
+### Streamlit Community Cloud (recommended)
+
+1. Push the repo public on GitHub.
+2. Sign in at https://share.streamlit.io and pick this repo.
+3. Set the entry point to `app.py`.
+4. In **Settings → Secrets**, paste the contents of
+   `.streamlit/secrets.toml.example` and fill in your `GEMINI_API_KEY`.
+5. Deploy. The free tier handles the demo load.
+
+### Railway / Hugging Face Spaces (Docker)
+
+```bash
+docker build -t nr2dashboard .
+docker run -p 8501:8501 -e GEMINI_API_KEY=... nr2dashboard
+```
+
+Both Railway and HF Spaces will pick up the included `Dockerfile`. Set
+`GEMINI_API_KEY` (and optionally `OPENAI_API_KEY` + `LLM_PROVIDER`) as
+platform secrets — never in the image.
 
 ## What works
 
@@ -152,6 +197,25 @@ uv run pytest eval/ -q
   exceptions all surface in the chat instead of failing silently.
 - `scripts/run_eval.py` — runs all 30 questions, tags pass/partial/fail,
   writes JSONL log, prints by-shape summary.
+
+### Phase 4 — Polish, deploy, demo prep
+- **SQL result cache** in `mcp_tools.run_sql`: `(source, normalized_sql)`
+  keyed, LRU bounded at 128 entries, returns `cached=True` on hit. Demo
+  re-asks come back in ~1 ms instead of ~4 s.
+- **OpenAI provider** in `llm_client.py` as drop-in insurance. Flip
+  `LLM_PROVIDER=openai` to swap. Sidebar shows active provider.
+- **Custom Streamlit theme** (`.streamlit/config.toml`) with the
+  project's purple primary color matching the threshold-bar palette.
+- **`scripts/preflight.py`** — 8-question pre-demo check (one per shape
+  plus the brief's flagships) that exits non-zero on any failure.
+- **Deploy artifacts**: `Dockerfile`, `.dockerignore`,
+  `.streamlit/secrets.toml.example`, and a README section covering
+  Streamlit Cloud, Railway, and HF Spaces.
+- **`docs/DEMO.md`** — minute-by-minute 5-minute demo script.
+- Cache hit/miss stats surfaced in the Streamlit sidebar with a
+  "Clear cache" button next to "Clear chat".
+- 5 new tests (cache hit / source-keyed cache / cache reset / provider
+  factory / OpenAI message translation) — **31/31 passing**.
 
 ### Phase 3 — Conversation memory & multi-source bonus
 - Orchestrator now caps replayed history at `MAX_HISTORY_TURNS = 12`

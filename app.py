@@ -11,7 +11,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from db import get_db
-from mcp_tools import call_tool
+from mcp_tools import call_tool, clear_sql_cache, sql_cache_stats
 from orchestrator import Orchestrator
 from renderer import render
 
@@ -98,11 +98,18 @@ def _sidebar() -> None:
         st.session_state.active_source = source
 
     orch = _orchestrator_singleton()
+    st.sidebar.text(f"Provider: {orch.client.provider}")
     st.sidebar.text(f"Model: {orch.client.model}")
+    cache = sql_cache_stats()
+    st.sidebar.text(f"SQL cache: {cache['entries']}/{cache['capacity']}")
 
     st.sidebar.divider()
-    if st.sidebar.button("Clear conversation", use_container_width=True):
+    btn_cols = st.sidebar.columns(2)
+    if btn_cols[0].button("Clear chat", use_container_width=True):
         _reset_history()
+        st.rerun()
+    if btn_cols[1].button("Clear cache", use_container_width=True):
+        clear_sql_cache()
         st.rerun()
 
     with st.sidebar.expander("Schema cheatsheet", expanded=False):
@@ -114,6 +121,15 @@ def _sidebar() -> None:
             "- **v_tool_calls** — one row / tool invocation\n"
             "- **v_conv_with_intent** — v_conversations + first user intent\n"
             "- **v_eval_pivot / v_conv_with_dc** — wide forms of the long views\n"
+        )
+
+    with st.sidebar.expander("Try one of these", expanded=False):
+        st.markdown(
+            "- Show me a pie chart of Greek vs English users.\n"
+            "- How is the bot doing this week?\n"
+            "- Top 10 intents by AHT.\n"
+            "- Δείξε μου τον μέσο χρόνο κλήσης ανά περιοχή.\n"
+            "- Anything weird about tool success in the last 90 days?\n"
         )
 
 
@@ -190,16 +206,19 @@ def main() -> None:
     _db_singleton()
     _sidebar()
 
-    st.title("NR2Dashboard")
-    st.caption(
-        "Ask the voicebot dataset anything — in English or Greek. "
-        "Try: *Show me a pie chart of Greek vs English users.*"
+    st.title("📊 NR2Dashboard")
+    st.markdown(
+        "##### Natural-language → dashboard over the SmartRep voicebot dataset"
     )
-    # Active-source banner — Phase 3 makes the multi-source toggle
-    # visible mid-conversation so a judge can see when it changes.
+    st.caption(
+        "Ask anything in English or Greek. Follow-ups, anomaly hunts, and "
+        "donut-chart style overrides all welcome."
+    )
+    # Active-source banner — visible mid-conversation toggle for judges.
     orch = _orchestrator_singleton()
     st.markdown(
         f"**Source:** `{st.session_state.active_source}` &nbsp;·&nbsp; "
+        f"**Provider:** `{orch.client.provider}` &nbsp;·&nbsp; "
         f"**Model:** `{orch.client.model}`"
     )
     _scope_bar()

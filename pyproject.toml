@@ -13,6 +13,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "sqlglot>=25.0",
     "google-genai>=0.3",
+    "openai>=1.40",
     "pyyaml>=6.0",
     "mcp>=1.0",
 ]
