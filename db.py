@@ -60,6 +60,15 @@ class Database:
         self._install_helper_views(con)
         self._install_jsonl_views(con)
         self._apply_source_aliases(con, self.source)
+        # Belt-and-suspenders: lock down the connection's filesystem and
+        # network access AFTER the JSONL views are registered. Anything
+        # the LLM sends via run_sql is parsed by sql_safety.py first
+        # (which rejects read_csv_auto / read_text / etc.); this DuckDB
+        # flag is the second layer in case anything slips through.
+        try:
+            con.execute("SET enable_external_access = false")
+        except Exception:  # pragma: no cover — older DuckDB versions
+            pass
         self._con = con
         return con
 
@@ -79,11 +88,19 @@ class Database:
         """Register JSONL-backed views with the same column shape as the
         native views. We name them `<view>_jsonl` so we can alias them
         later via `switch_source`.
+
+        The JSONL is materialized into a TEMP TABLE on connect so the
+        underlying file is read exactly once. That makes it safe to set
+        `enable_external_access = false` after this runs — subsequent
+        queries against the JSONL views hit the in-memory table, not
+        the filesystem.
         """
-        # Base nested table from JSONL — only read once.
+        # Materialize once. CTAS with read_json_auto reads the file
+        # eagerly; subsequent queries against conversations_raw_jsonl
+        # are pure in-memory and need no filesystem access.
         con.execute(
             f"""
-            CREATE OR REPLACE TEMP VIEW conversations_raw_jsonl AS
+            CREATE OR REPLACE TEMP TABLE conversations_raw_jsonl AS
             SELECT * FROM read_json_auto('{JSONL_PATH}');
             """
         )

@@ -36,42 +36,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from eval_grading import tag_turn  # noqa: E402
+
 QUESTIONS_PATH = ROOT / "eval" / "questions.yaml"
 
-VALID_CHART_TYPES = {
-    "bar", "line", "area", "pie", "donut",
-    "scatter", "heatmap", "kpi", "table",
-}
-
 STATUS_GLYPH = {"pass": "OK  ", "partial": "PART", "fail": "FAIL"}
-
-
-def _tag(turnlog) -> tuple[str, str]:
-    """Score one orchestrator turn. Returns (status, reason)."""
-    if turnlog.error:
-        return "fail", turnlog.error
-    if not turnlog.chart_spec:
-        return "fail", "no chart spec"
-    chart_type = (turnlog.chart_spec.get("type") or "").lower()
-    if chart_type not in VALID_CHART_TYPES:
-        return "fail", f"unknown chart type {chart_type!r}"
-    if not turnlog.explanation:
-        return "partial", "empty explanation"
-    if not turnlog.sql:
-        # Allowed for clarify-style answers (e.g. no-revenue case)
-        if chart_type == "kpi" and "?" in turnlog.explanation:
-            return "pass", "clarification (no SQL needed)"
-        return "partial", "no SQL produced"
-
-    # Re-run SQL through the safety layer + executor to confirm it works.
-    from mcp_tools import call_tool
-
-    res = call_tool("run_sql", {"query": turnlog.sql})
-    if "error" in res:
-        return "fail", f"sql failed: {res['error']}"
-    if not res.get("rows"):
-        return "partial", "sql ran but no rows"
-    return "pass", "ok"
 
 
 def main() -> int:
@@ -146,7 +115,7 @@ def main() -> int:
 
             try:
                 turnlog = orch.run(text, history=history)
-                status, reason = _tag(turnlog)
+                status, reason = tag_turn(turnlog)
                 prior_turn[qid] = turnlog
             except Exception as e:
                 turnlog = None

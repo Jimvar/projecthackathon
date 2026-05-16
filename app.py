@@ -166,13 +166,22 @@ def _render_assistant_turn(turn: dict) -> None:
     chart = turn.get("chart") or {}
     sql = turn.get("sql") or ""
     if chart and sql:
-        df, err = _df_from_sql(sql)
+        # Build the figure once per turn and stash it on the turn dict
+        # so subsequent re-renders (Streamlit reruns on every input)
+        # don't re-execute the SQL and re-build the Plotly figure.
+        fig = turn.get("_fig")
+        err = turn.get("_err")
+        if fig is None and err is None:
+            df, err = _df_from_sql(sql)
+            if err is None and not df.empty:
+                fig = render({"chart": chart}, df)
+            turn["_fig"] = fig
+            turn["_err"] = err
         if err:
             st.warning(f"Could not render this chart: {err}")
-        elif df.empty:
+        elif fig is None:
             st.info("Query returned no rows.")
         else:
-            fig = render({"chart": chart}, df)
             st.plotly_chart(fig, use_container_width=True)
     if sql:
         with st.expander("Show SQL"):

@@ -256,3 +256,117 @@ def test_orchestrator_writes_turn_log(tmp_path, monkeypatch):
     assert isinstance(rec["latency_ms"], int)
     assert "ts" in rec
     assert "source" in rec
+
+
+def test_openai_tool_call_id_round_trips():
+    """If an assistant message has a tool_call with id 'X', the matching
+    tool response must carry tool_call_id 'X' — OpenAI rejects the
+    payload otherwise. Previous bug: the assistant got id 'call_0' and
+    the tool got id 'call_<name>', which didn't match."""
+    from llm_client import _to_openai_messages
+
+    messages = [
+        {"role": "user", "text": "count rows"},
+        {
+            "role": "model",
+            "tool_calls": [
+                {"name": "run_sql", "arguments": {"query": "SELECT 1"}, "id": "tc_abc"}
+            ],
+        },
+        {"role": "tool", "name": "run_sql", "tool_call_id": "tc_abc",
+         "response": {"rows": [[1]]}},
+    ]
+    out = _to_openai_messages(messages, system_instruction="sys")
+
+    asst = next(m for m in out if m["role"] == "assistant")
+    tool = next(m for m in out if m["role"] == "tool")
+    assert asst["tool_calls"][0]["id"] == tool["tool_call_id"] == "tc_abc"
+
+
+def test_openai_tool_call_id_synthesized_when_missing():
+    """Even with no id supplied upstream (e.g. tests that hand-build
+    messages), the assistant and tool messages must agree on the id."""
+    from llm_client import _to_openai_messages
+
+    messages = [
+        {"role": "user", "text": "count rows"},
+        {"role": "model", "tool_calls": [{"name": "run_sql", "arguments": {}}]},
+        {"role": "tool", "name": "run_sql", "response": {"rows": []}},
+    ]
+    out = _to_openai_messages(messages, system_instruction=None)
+    asst = next(m for m in out if m["role"] == "assistant")
+    tool = next(m for m in out if m["role"] == "tool")
+    assert asst["tool_calls"][0]["id"] == tool["tool_call_id"]
+
+
+def test_orchestrator_history_trim_starts_on_user():
+    """When the trim slice lands on a `model` entry, the orchestrator
+    must drop it — an orphaned assistant contract at the head confuses
+    Gemini. Verifies the alternation guard added in the post-review
+    cleanup."""
+    from orchestrator import MAX_HISTORY_TURNS
+
+    contract = {"sql": "SELECT 1 AS n",
+                "chart": {"type": "kpi", "y": "n", "title": "x"},
+                "explanation": "ok"}
+    script = _Script(
+        seen=[],
+        responses=[LLMResponse(text=json.dumps(contract), tool_calls=[], raw=None)],
+    )
+    orch = Orchestrator(client=script, write_log=False)  # type: ignore[arg-type]
+
+    # Build a history where the last MAX_HISTORY_TURNS entries start with
+    # a `model` turn (which would happen naturally if MAX_HISTORY_TURNS
+    # is even and there are an odd number of user/asst pairs prior).
+    history: list[dict] = []
+    # 13 user/asst pairs = 26 entries. history[-12:] starts on a `model`.
+    for i in range(13):
+        history.append({"role": "user", "text": f"q{i}"})
+        history.append({
+            "role": "assistant",
+            "sql": f"SELECT {i}",
+            "chart": {"type": "kpi", "y": "n"},
+            "explanation": f"a{i}",
+        })
+
+    orch.run("latest", history=history)
+    sent = script.seen[0]
+    # The first non-system entry the model sees must be a user message.
+    first_non_system = sent[0]
+    assert first_non_system["role"] == "user", (
+        f"first message should be user, got {first_non_system!r}"
+    )
+
+
+def test_orchestrator_threads_tool_call_id():
+    """When the LLM emits a tool call with id 'X', the orchestrator must
+    send the matching tool response back with tool_call_id 'X'."""
+    from llm_client import ToolCall
+
+    contract = {"sql": "SELECT 1 AS n",
+                "chart": {"type": "kpi", "y": "n", "title": "x"},
+                "explanation": "ok"}
+    script = _Script(
+        seen=[],
+        responses=[
+            # First turn: model wants to call run_sql with id 'xyz'.
+            LLMResponse(
+                text=None,
+                tool_calls=[
+                    ToolCall(name="run_sql", arguments={"query": "SELECT 1"}, id="xyz")
+                ],
+                raw=None,
+            ),
+            # Second turn: model returns the final contract.
+            LLMResponse(text=json.dumps(contract), tool_calls=[], raw=None),
+        ],
+    )
+    orch = Orchestrator(client=script, write_log=False)  # type: ignore[arg-type]
+    orch.run("count")
+
+    # The second LLM call must include a tool-role message with the
+    # threaded id.
+    second_round = script.seen[1]
+    tool_msgs = [m for m in second_round if m.get("role") == "tool"]
+    assert tool_msgs, "expected tool result in second round"
+    assert tool_msgs[0]["tool_call_id"] == "xyz"
