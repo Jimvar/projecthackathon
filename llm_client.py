@@ -140,10 +140,13 @@ class LLMClient:
 
 def _to_gemini_contents(messages: list[dict]) -> list[types.Content]:
     out: list[types.Content] = []
-    for m in messages:
+    i = 0
+    while i < len(messages):
+        m = messages[i]
         role = m["role"]
         if role == "user":
             out.append(types.Content(role="user", parts=[types.Part(text=m["text"])]))
+            i += 1
         elif role in ("assistant", "model"):
             # Prefer the original parts list we captured from the model's
             # response, if the caller threaded it through. This preserves
@@ -153,6 +156,7 @@ def _to_gemini_contents(messages: list[dict]) -> list[types.Content]:
             raw_parts = m.get("_gemini_parts")
             if raw_parts:
                 out.append(types.Content(role="model", parts=list(raw_parts)))
+                i += 1
                 continue
             parts: list[types.Part] = []
             if m.get("text"):
@@ -169,20 +173,26 @@ def _to_gemini_contents(messages: list[dict]) -> list[types.Content]:
             if not parts:
                 parts = [types.Part(text="")]
             out.append(types.Content(role="model", parts=parts))
+            i += 1
         elif role == "tool":
-            out.append(
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part(
-                            function_response=types.FunctionResponse(
-                                name=m["name"],
-                                response=m["response"],
-                            )
+            # Gemini requires the function_response part count in a tool
+            # turn to match the function_call part count of the preceding
+            # model turn. Coalesce consecutive tool messages (one per
+            # tool call in our internal shape) into one Content with all
+            # the response parts.
+            response_parts: list[types.Part] = []
+            while i < len(messages) and messages[i].get("role") == "tool":
+                t = messages[i]
+                response_parts.append(
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            name=t["name"],
+                            response=t["response"],
                         )
-                    ],
+                    )
                 )
-            )
+                i += 1
+            out.append(types.Content(role="user", parts=response_parts))
         else:
             raise ValueError(f"unknown role: {role!r}")
     return out
