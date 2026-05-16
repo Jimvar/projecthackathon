@@ -14,6 +14,7 @@ from db import get_db
 from mcp_tools import call_tool
 from orchestrator import Orchestrator
 from renderer import choose_layout, render_panels
+from report import generate_executive_report
 
 load_dotenv()
 
@@ -308,6 +309,52 @@ def main() -> None:
     _scope_bar()
 
     _replay_history()
+
+    # --- Executive-report generator ---------------------------------
+    # The button only appears once the user has asked at least one
+    # question; before that there's nothing to summarise. The download
+    # button appears immediately below when the latest turn is a report.
+    if st.session_state.history:
+        _, btn_col, _ = st.columns([1, 2, 1])
+        with btn_col:
+            if st.button(
+                "📊 Generate Executive Summary Report",
+                use_container_width=True,
+                type="primary",
+                key="generate_report_btn",
+            ):
+                with st.spinner("Analysing session data and generating business briefing…"):
+                    try:
+                        report_md = generate_executive_report(st.session_state.history)
+                    except Exception as e:  # pragma: no cover - shown live in UI
+                        report_md = f"_Could not generate the report: {e}_"
+                st.session_state.history.append({
+                    "role": "assistant",
+                    "text": report_md,
+                    "explanation": report_md,
+                    "sql": "",
+                    "chart": {},
+                    "panels": [],
+                    "layout": "single",
+                    "error": "",
+                    "is_report": True,
+                })
+                st.rerun()
+
+    # Download button — only when the most recent turn is a report.
+    if (
+        st.session_state.history
+        and st.session_state.history[-1].get("is_report")
+    ):
+        st.download_button(
+            label="📥 Export Executive Report as Markdown (.md)",
+            data=st.session_state.history[-1]["explanation"],
+            file_name="Executive_Voicebot_Analytics_Report.md",
+            mime="text/markdown",
+            use_container_width=True,
+            key="export_report_btn",
+        )
+    # ----------------------------------------------------------------
 
     user_text = st.chat_input("Ask a question…")
     if not user_text:

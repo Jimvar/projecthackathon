@@ -45,6 +45,7 @@ py-modules = [
     "mcp_tools",
     "orchestrator",
     "renderer",
+    "report",
     "sql_safety",
     "turn_log",
 ]
