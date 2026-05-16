@@ -42,6 +42,11 @@ def _env_int(name: str, default: int) -> int:
 MAX_TOOL_HOPS = _env_int("NR2_MAX_TOOL_HOPS", 6)            # safety stop for the tool-use loop
 MAX_HISTORY_TURNS = _env_int("NR2_MAX_HISTORY_TURNS", 12)   # last N history entries forwarded to the LLM
 
+# Hard cap on panels per turn. Keep in sync with renderer.MAX_PANELS;
+# both layers enforce it independently. Hardcoded (not env-tunable) so
+# the layout heuristics in app.py can rely on it.
+_MAX_PANELS = 4
+
 
 # Keywords that should trigger auto-injection of the relevant metric definition.
 METRIC_TRIGGERS = {
@@ -69,8 +74,10 @@ METRIC_TRIGGERS = {
 @dataclass
 class TurnLog:
     user_message: str
-    sql: str = ""
-    chart_spec: dict | None = None
+    sql: str = ""                          # back-compat: first panel's SQL
+    chart_spec: dict | None = None         # back-compat: first panel's chart
+    panels: list[dict] = field(default_factory=list)  # full panel list (1 = single chart)
+    layout: str = "auto"                   # "auto" | "single" | "row" | "grid" | "kpi_strip+chart"
     explanation: str = ""
     error: str = ""
     tool_calls: list[dict] = field(default_factory=list)
@@ -153,9 +160,25 @@ class Orchestrator:
                     log.error = "model did not return a valid JSON contract"
                     log.explanation = (resp.text or "").strip()[:500]
                 else:
-                    log.sql = parsed.get("sql", "")
-                    log.chart_spec = parsed.get("chart", {}) or {}
                     log.explanation = parsed.get("explanation", "")
+                    log.layout = parsed.get("layout", "auto")
+                    # Normalize both contract shapes — single chart
+                    # `{sql, chart}` and multi-panel `{panels: [...]}` —
+                    # into one panels list. Cap at MAX_PANELS to keep the
+                    # UI honest.
+                    panels = parsed.get("panels")
+                    if isinstance(panels, list) and panels:
+                        log.panels = panels[:_MAX_PANELS]
+                    elif parsed.get("chart"):
+                        log.panels = [{
+                            "sql": parsed.get("sql", ""),
+                            "chart": parsed.get("chart") or {},
+                        }]
+                    # Back-compat fields (eval_grading, existing tests).
+                    if log.panels:
+                        first = log.panels[0]
+                        log.sql = first.get("sql", "") or log.sql
+                        log.chart_spec = first.get("chart") or log.chart_spec
                 break
 
             for tc in resp.tool_calls:
