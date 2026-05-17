@@ -22,7 +22,7 @@ from renderer import choose_layout, render_panels
 
 load_dotenv()
 
-st.set_page_config(page_title="NR2Dashboard", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Raid.AI", page_icon="📊", layout="wide")
 
 
 SCOPE_LABELS = ["Full window", "Last 30 days", "Last 7 days"]
@@ -127,7 +127,7 @@ def _df_from_sql(sql: str) -> tuple[pd.DataFrame, str | None]:
 
 
 def _sidebar() -> None:
-    st.sidebar.title("NR2Dashboard")
+    st.sidebar.title("Raid.AI")
     st.sidebar.caption("Natural-language → dashboard")
 
     _source_picker()
@@ -512,7 +512,7 @@ def main() -> None:
     _db_singleton()
     _sidebar()
 
-    st.title("📊 NR2Dashboard")
+    st.title("📊 Raid.AI")
     st.markdown(
         "##### Natural-language → dashboard over the SmartRep voicebot dataset"
     )

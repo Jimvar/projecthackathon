@@ -40,8 +40,8 @@ def _env_int(name: str, default: int) -> int:
 
 # Tunables — env-overridable so a long demo session or a deeper-tool-use
 # debug run doesn't require code changes.
-MAX_TOOL_HOPS = _env_int("NR2_MAX_TOOL_HOPS", 6)            # safety stop for the tool-use loop
-MAX_HISTORY_TURNS = _env_int("NR2_MAX_HISTORY_TURNS", 12)   # last N history entries forwarded to the LLM
+MAX_TOOL_HOPS = _env_int("NR2_MAX_TOOL_HOPS", 50)            # safety stop for the tool-use loop
+MAX_HISTORY_TURNS = _env_int("NR2_MAX_HISTORY_TURNS", 20)   # last N history entries forwarded to the LLM
 
 # Hard cap on panels per turn. Keep in sync with renderer.MAX_PANELS;
 # both layers enforce it independently. Hardcoded (not env-tunable) so
