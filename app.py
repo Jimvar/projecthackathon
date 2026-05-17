@@ -31,6 +31,16 @@ SCOPE_PHRASE = {
     "Last 7 days": "Use only the last 7 days of data.",
 }
 
+# Sample prompts surfaced in the sidebar. Each one is a clickable
+# button that submits as if the user had typed it into the chat box.
+SAMPLE_PROMPTS = [
+    "Show me a pie chart of Greek vs English users.",
+    "How is the bot doing this week?",
+    "Top 10 intents by AHT.",
+    "Δείξε μου τον μέσο χρόνο κλήσης ανά περιοχή.",
+    "Anything weird about tool success in the last 90 days?",
+]
+
 
 # ---------------------------------------------------------------------- cached resources
 
@@ -145,13 +155,15 @@ def _sidebar() -> None:
         )
 
     with st.sidebar.expander("Try one of these", expanded=False):
-        st.markdown(
-            "- Show me a pie chart of Greek vs English users.\n"
-            "- How is the bot doing this week?\n"
-            "- Top 10 intents by AHT.\n"
-            "- Δείξε μου τον μέσο χρόνο κλήσης ανά περιοχή.\n"
-            "- Anything weird about tool success in the last 90 days?\n"
-        )
+        st.caption("Click to send.")
+        for i, prompt in enumerate(SAMPLE_PROMPTS):
+            if st.button(prompt, key=f"_sample_{i}", use_container_width=True):
+                # Streamlit's st.chat_input doesn't accept a programmatic
+                # value, so we stash the prompt in session_state and the
+                # main flow picks it up on the next rerun as if the user
+                # had typed it.
+                st.session_state["pending_prompt"] = prompt
+                st.rerun()
 
 
 # ---------------------------------------------------------------------- data-source picker + import
@@ -526,6 +538,11 @@ def main() -> None:
     _replay_history()
 
     user_text = st.chat_input("Ask a question…")
+    # A click on a sidebar sample prompt parks the text in session_state.
+    # Pick it up here so the rest of the flow treats it as a regular
+    # user message.
+    if not user_text and st.session_state.get("pending_prompt"):
+        user_text = st.session_state.pop("pending_prompt")
     if not user_text:
         return
 
