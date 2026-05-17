@@ -6,11 +6,15 @@ Run with:
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from db import get_db
+import db as db_module
+from db import MAX_USER_SOURCES, get_db
 from mcp_tools import call_tool
 from orchestrator import Orchestrator
 from renderer import choose_layout, render_panels
@@ -49,7 +53,11 @@ def _reset_history() -> None:
 
 def _ensure_state() -> None:
     st.session_state.setdefault("history", [])
-    st.session_state.setdefault("active_source", "duckdb")
+    # active_source mirrors db.active_source_id so the radio/selectbox can
+    # bind to it. The DB is the source of truth on disk; this is just the
+    # widget's current value.
+    db = _db_singleton()
+    st.session_state.setdefault("active_source", db.active_source_id)
     st.session_state.setdefault("scope", "Full window")
 
 
@@ -86,16 +94,8 @@ def _sidebar() -> None:
     st.sidebar.title("NR2Dashboard")
     st.sidebar.caption("Natural-language → dashboard")
 
-    source = st.sidebar.radio(
-        "Data source",
-        options=["duckdb", "jsonl"],
-        index=0 if st.session_state.active_source == "duckdb" else 1,
-        horizontal=True,
-        help="Both sources expose the same column shape. Switch mid-conversation to compare.",
-    )
-    if source != st.session_state.active_source:
-        call_tool("switch_source", {"source": source})
-        st.session_state.active_source = source
+    _source_picker()
+    _import_panel()
 
     orch = _orchestrator_singleton()
     st.sidebar.text(f"Provider: {orch.client.provider}")
@@ -125,6 +125,160 @@ def _sidebar() -> None:
             "- Δείξε μου τον μέσο χρόνο κλήσης ανά περιοχή.\n"
             "- Anything weird about tool success in the last 90 days?\n"
         )
+
+
+# ---------------------------------------------------------------------- data-source picker + import
+
+
+def _rebuild_db_cache() -> None:
+    """Drop Streamlit's cached Database so the next render re-reads the
+    manifest. Pairs with `db.register_source` / `db.unregister_source`,
+    which already close the underlying DuckDB connection."""
+    _db_singleton.clear()
+    db_module.reset_db()
+
+
+def _source_picker() -> None:
+    db = _db_singleton()
+    sources = db.sources()
+    ids = [s.id for s in sources]
+    labels = {
+        s.id: f"{s.display_name}" + ("  · built-in" if s.is_builtin else "  · imported")
+        for s in sources
+    }
+    current = st.session_state.active_source
+    if current not in ids:
+        current = db.active_source_id
+        st.session_state.active_source = current
+    chosen = st.sidebar.selectbox(
+        "Data source",
+        options=ids,
+        index=ids.index(current),
+        format_func=lambda i: labels.get(i, i),
+        help="Built-ins ship with the demo. Imported sources sit in data/uploads/.",
+        key="_source_selectbox",
+    )
+    if chosen != db.active_source_id:
+        call_tool("switch_source", {"source": chosen})
+        st.session_state.active_source = chosen
+
+
+def _import_panel() -> None:
+    db = _db_singleton()
+    used = db.user_source_count()
+    full = used >= MAX_USER_SOURCES
+    title = f"Import database ({used}/{MAX_USER_SOURCES})"
+    with st.sidebar.expander(title, expanded=False):
+        st.caption(
+            "Upload a .jsonl or .duckdb file with the same shape as the "
+            "built-in dataset. Imports persist while this server runs; "
+            "they're lost when the container is reclaimed."
+        )
+        uploaded = st.file_uploader(
+            "File",
+            type=["jsonl", "duckdb"],
+            accept_multiple_files=False,
+            key="_import_uploader",
+            disabled=full,
+            label_visibility="collapsed",
+        )
+        default_name = Path(uploaded.name).stem if uploaded else ""
+        name = st.text_input(
+            "Display name",
+            value=default_name,
+            placeholder="e.g. Q3 2025 data",
+            disabled=full or uploaded is None,
+            key="_import_name",
+        )
+        add = st.button(
+            "Add source",
+            use_container_width=True,
+            disabled=full or uploaded is None,
+            type="primary",
+        )
+        if full:
+            st.warning(f"At the cap of {MAX_USER_SOURCES} imports. Remove one to add another.")
+        if add and uploaded is not None:
+            _handle_import(uploaded, name)
+
+        # List + remove imported sources.
+        imported = [s for s in db.sources() if not s.is_builtin]
+        if imported:
+            st.markdown("**Imported sources**")
+            for src in imported:
+                col_a, col_b = st.columns([5, 1])
+                with col_a:
+                    st.text(src.display_name)
+                    st.caption(f"`{src.id}`  ·  {src.kind.replace('upload_', '.')}")
+                with col_b:
+                    if st.button("✕", key=f"_rm_{src.id}", help="Remove this source"):
+                        _handle_remove(src.id)
+
+
+def _handle_import(uploaded, display_name: str) -> None:
+    suffix = Path(uploaded.name).suffix.lower()
+    if suffix == ".jsonl":
+        kind = "upload_jsonl"
+    elif suffix == ".duckdb":
+        kind = "upload_duckdb"
+    else:
+        st.error(f"Unsupported extension: {suffix}")
+        return
+
+    # Write the bytes to a temp file so register_source can copy from a
+    # path. register_source closes the live connection — the next
+    # _db_singleton() call rebuilds with the new source materialized.
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(uploaded.getbuffer())
+        tmp_path = Path(tmp.name)
+
+    db = _db_singleton()
+    try:
+        src = db.register_source(display_name, tmp_path, kind)
+    except Exception as e:
+        st.error(f"Could not register source: {e}")
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+        return
+    finally:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+
+    # Validate by switching to it and running a one-row probe. If it
+    # fails, roll the registration back so a broken upload doesn't
+    # poison the session.
+    _rebuild_db_cache()
+    db = _db_singleton()
+    try:
+        db.switch_source(src.id)
+        db.execute("SELECT conversation_id FROM v_conversations_active LIMIT 1").fetchone()
+    except Exception as e:
+        st.error(f"Imported file failed validation: {e}")
+        db.switch_source("duckdb")
+        db.unregister_source(src.id)
+        _rebuild_db_cache()
+        return
+
+    st.session_state.active_source = src.id
+    st.success(f"Imported `{src.display_name}` — now active.")
+    st.rerun()
+
+
+def _handle_remove(source_id: str) -> None:
+    db = _db_singleton()
+    try:
+        db.unregister_source(source_id)
+    except Exception as e:
+        st.error(f"Could not remove source: {e}")
+        return
+    _rebuild_db_cache()
+    new_db = _db_singleton()
+    st.session_state.active_source = new_db.active_source_id
+    st.rerun()
 
 
 # ---------------------------------------------------------------------- top scope bar
@@ -300,8 +454,14 @@ def main() -> None:
     )
     # Active-source banner — visible mid-conversation toggle for judges.
     orch = _orchestrator_singleton()
+    db = _db_singleton()
+    active = next(
+        (s for s in db.sources() if s.id == db.active_source_id),
+        None,
+    )
+    source_label = active.display_name if active else st.session_state.active_source
     st.markdown(
-        f"**Source:** `{st.session_state.active_source}` &nbsp;·&nbsp; "
+        f"**Source:** `{source_label}` &nbsp;·&nbsp; "
         f"**Provider:** `{orch.client.provider}` &nbsp;·&nbsp; "
         f"**Model:** `{orch.client.model}`"
     )

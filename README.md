@@ -56,7 +56,7 @@ answer. Built for the SmartRep Makeathon — Phases 0, 1, 2, 3, and 4.
 
 - **Streamlit 1.57** chat UI (uses `st.pills` for the time-scope chips)
 - **DuckDB** read-only over the provided dataset; helper views are `TEMP`
-- **MCP server** (`mcp_server.py`) wrapping the 8 tools via FastMCP/stdio
+- **MCP server** (`mcp_server.py`) wrapping the 9 tools via FastMCP/stdio
 - **Gemini** (`gemini-2.5-flash` by default) for NL → SQL + chart-spec
 - **Plotly** for rendering, 9 chart families
 - **sqlglot** SELECT/WITH-only safety layer
@@ -70,7 +70,7 @@ answer. Built for the SmartRep Makeathon — Phases 0, 1, 2, 3, and 4.
 ├── orchestrator.py              # LLM tool-use loop (+ per-turn JSONL logging)
 ├── llm_client.py                # Thin Gemini abstraction
 ├── mcp_server.py                # MCP server (stdio / http) wrapping mcp_tools
-├── mcp_tools.py                 # The 8 tool implementations
+├── mcp_tools.py                 # The 9 tool implementations
 ├── db.py                        # DuckDB connection + source switching
 ├── sql_safety.py                # SELECT/WITH-only validator (sqlglot)
 ├── renderer.py                  # Chart spec → Plotly figure
@@ -197,7 +197,7 @@ platform secrets — never in the image.
   `v_eval_pivot`, `v_conv_with_dc`).
 - Source switching: same SQL works against `duckdb` and `jsonl`.
 - SELECT/WITH-only SQL safety; 10k-row cap; 256kB-byte cap.
-- MCP server reachable over stdio with 8 tools.
+- MCP server reachable over stdio with 9 tools.
 - Gemini function-calling tool-use loop with auto-injected metric definitions
   on English and Greek triggers.
 - Plotly renderer: bar / line / area / pie / donut / scatter / heatmap / kpi /

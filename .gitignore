@@ -6,6 +6,7 @@ __pycache__/
 .env
 .env.local
 logs/*.jsonl
+data/uploads/
 .DS_Store
 *.egg-info/
 build/

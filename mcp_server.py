@@ -21,6 +21,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp_tools import (
     describe_schema,
     get_metric_definition,
+    list_sources,
     list_tables,
     run_sql,
     sample_rows,
@@ -99,13 +100,22 @@ def t_time_range(table: str, column: str = "start_time") -> dict:
 
 @mcp.tool(
     description=(
-        "Switch the data source backing the canonical views. "
-        "Pass 'duckdb' for the native flat views or 'jsonl' for views "
-        "derived from conversations.jsonl with the same column shape."
+        "Switch the active data source. Accepts the legacy strings 'duckdb' "
+        "/ 'jsonl' or any registered source id (see list_sources)."
     )
 )
 def t_switch_source(source: str) -> dict:
     return switch_source(source)
+
+
+@mcp.tool(
+    description=(
+        "List the registered data sources (built-ins plus user uploads) "
+        "and which one is currently active."
+    )
+)
+def t_list_sources() -> dict:
+    return list_sources()
 
 
 def main() -> None:
