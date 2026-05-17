@@ -23,6 +23,7 @@ from mcp_tools import (
     get_metric_definition,
     list_sources,
     list_tables,
+    reload_sources,
     run_sql,
     sample_rows,
     switch_source,
@@ -116,6 +117,17 @@ def t_switch_source(source: str) -> dict:
 )
 def t_list_sources() -> dict:
     return list_sources()
+
+
+@mcp.tool(
+    description=(
+        "Drop the live DuckDB connection so the next call rebuilds from "
+        "data/uploads/manifest.json. Used by the Streamlit app to sync "
+        "the server after a user upload."
+    )
+)
+def t_reload_sources() -> dict:
+    return reload_sources()
 
 
 def main() -> None:

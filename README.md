@@ -45,12 +45,17 @@ answer. Built for the SmartRep Makeathon — Phases 0, 1, 2, 3, and 4.
 ```
 
 > **Note on the MCP server.** `mcp_tools.py` is the in-process Python
-> implementation of the eight tools; the orchestrator calls into it
-> directly for speed. `mcp_server.py` re-exposes the same functions over
-> the MCP stdio protocol (`uv run python mcp_server.py`) — verified
-> reachable end-to-end via the official MCP client — and is what the
-> PDF brief's "MCP server" requirement points at. Either path produces
-> identical results.
+> implementation of the nine tools. The Streamlit app's orchestrator
+> talks to them through `mcp_server.py` over the MCP stdio protocol:
+> `app.py` spawns the server as a subprocess on startup via
+> `mcp_client.MCPClient` and routes every LLM tool call through it.
+> The renderer's per-chart SQL re-execution stays in-process (it isn't
+> a tool call, just a DataFrame fetch); the sidebar's source
+> mutations are mirrored to the server via `reload_sources` so both
+> processes' DBs track the shared `data/uploads/manifest.json`.
+> Either path produces identical results — the in-process dispatcher
+> remains the default for the eval suite so tests don't spawn a
+> subprocess per run.
 
 ## Stack
 

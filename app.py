@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 import db as db_module
 from db import MAX_USER_SOURCES, get_db
+from mcp_client import get_mcp_client
 from mcp_tools import call_tool
 from orchestrator import Orchestrator
 from renderer import choose_layout, render_panels
@@ -40,8 +41,33 @@ def _db_singleton():
 
 
 @st.cache_resource(show_spinner=False)
+def _mcp_client_singleton():
+    """Long-lived MCP stdio session — spawns mcp_server.py as a subprocess
+    on first call and keeps it alive for the lifetime of the Streamlit
+    process."""
+    return get_mcp_client()
+
+
+@st.cache_resource(show_spinner=False)
 def _orchestrator_singleton() -> Orchestrator:
-    return Orchestrator()
+    # All of the orchestrator's LLM tool calls go over MCP. The renderer's
+    # in-process SQL re-execution (`_df_from_sql`) stays direct — it's
+    # not a tool call, just a DB query for the Plotly DataFrame.
+    mcp = _mcp_client_singleton()
+    return Orchestrator(call_tool=mcp.call_tool)
+
+
+def _sync_to_mcp_server() -> None:
+    """Tell the MCP server's DB to drop its connection so the next call
+    rebuilds from the shared manifest. Use after any source-mutating op
+    (register / unregister / switch). The manifest is the source of
+    truth between the two processes; this just nudges the server."""
+    try:
+        _mcp_client_singleton().call_tool("reload_sources", {})
+    except Exception:
+        # Don't fail the UI if the server hiccups — the next tool call
+        # from the orchestrator will reconnect and resync regardless.
+        pass
 
 
 # ---------------------------------------------------------------------- state
@@ -100,6 +126,7 @@ def _sidebar() -> None:
     orch = _orchestrator_singleton()
     st.sidebar.text(f"Provider: {orch.client.provider}")
     st.sidebar.text(f"Model: {orch.client.model}")
+    st.sidebar.text("Tools: MCP stdio (mcp_server.py)")
 
     st.sidebar.divider()
     if st.sidebar.button("Clear conversation", use_container_width=True):
@@ -160,6 +187,7 @@ def _source_picker() -> None:
     )
     if chosen != db.active_source_id:
         call_tool("switch_source", {"source": chosen})
+        _sync_to_mcp_server()
         st.session_state.active_source = chosen
 
 
@@ -264,6 +292,7 @@ def _handle_import(uploaded, display_name: str) -> None:
         return
 
     st.session_state.active_source = src.id
+    _sync_to_mcp_server()
     st.success(f"Imported `{src.display_name}` — now active.")
     st.rerun()
 
@@ -278,6 +307,7 @@ def _handle_remove(source_id: str) -> None:
     _rebuild_db_cache()
     new_db = _db_singleton()
     st.session_state.active_source = new_db.active_source_id
+    _sync_to_mcp_server()
     st.rerun()
 
 
