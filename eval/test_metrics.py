@@ -207,6 +207,86 @@ def test_switch_source_round_trip():
     assert rows_jsonl == rows_duckdb, "same query should produce the same answer on both sources"
 
 
+# ---------------------------------------------------------------------- import / registry
+
+
+def test_list_sources_includes_both_builtins():
+    res = call_tool("list_sources", {})
+    assert "error" not in res, res
+    ids = {s["id"] for s in res["sources"]}
+    assert {"builtin_duckdb", "builtin_jsonl"}.issubset(ids)
+    builtins = [s for s in res["sources"] if s["builtin"]]
+    assert len(builtins) == 2
+
+
+def test_register_and_unregister_jsonl_round_trip(tmp_path, monkeypatch):
+    """A copy of the built-in JSONL should register, become switchable,
+    and unregister cleanly — exercising the upload flow end-to-end."""
+    import db as db_module
+    # Use an isolated uploads dir + manifest so the test can't smear the
+    # developer's local state.
+    monkeypatch.setattr(db_module, "UPLOADS_DIR", tmp_path)
+    monkeypatch.setattr(db_module, "MANIFEST_PATH", tmp_path / "manifest.json")
+    db_module.reset_db()
+    db = db_module.get_db()
+    try:
+        src = db.register_source("Test JSONL", db_module.JSONL_PATH, "upload_jsonl")
+        assert src.id.startswith("src_")
+        # New connection picks up the registered source.
+        db = db_module.get_db()
+        ids = {s.id for s in db.sources()}
+        assert src.id in ids
+        # Can switch to it and query v_conversations_active.
+        active = db.switch_source(src.id)
+        assert active == src.id
+        n = db.execute(
+            "SELECT COUNT(*) FROM v_conversations_active"
+        ).fetchone()[0]
+        assert n > 0
+        # Removing it bounces us back to builtin_duckdb.
+        db.unregister_source(src.id)
+        db = db_module.get_db()
+        assert db.active_source_id == "builtin_duckdb"
+        assert src.id not in {s.id for s in db.sources()}
+    finally:
+        db_module.reset_db()
+
+
+def test_register_source_respects_cap(tmp_path, monkeypatch):
+    import db as db_module
+    monkeypatch.setattr(db_module, "UPLOADS_DIR", tmp_path)
+    monkeypatch.setattr(db_module, "MANIFEST_PATH", tmp_path / "manifest.json")
+    monkeypatch.setattr(db_module, "MAX_USER_SOURCES", 2)
+    db_module.reset_db()
+    db = db_module.get_db()
+    added = []
+    try:
+        for i in range(2):
+            added.append(
+                db_module.get_db().register_source(
+                    f"copy {i}", db_module.JSONL_PATH, "upload_jsonl"
+                )
+            )
+        with pytest.raises(ValueError, match="cap"):
+            db_module.get_db().register_source(
+                "overflow", db_module.JSONL_PATH, "upload_jsonl"
+            )
+    finally:
+        for s in added:
+            try:
+                db_module.get_db().unregister_source(s.id)
+            except Exception:
+                pass
+        db_module.reset_db()
+
+
+def test_unregister_builtin_rejected():
+    from db import get_db
+    db = get_db()
+    with pytest.raises(ValueError, match="built-in"):
+        db.unregister_source("builtin_duckdb")
+
+
 # ---------------------------------------------------------------------- Phase 3 / rules
 
 def test_no_hardcoded_dispatch_in_source():
@@ -276,12 +356,22 @@ def test_run_sql_rejects_filesystem_reads(bad):
     assert "can read the filesystem" in res["error"]
 
 
-def test_db_connection_blocks_external_access(db):
-    """Belt-and-suspenders: even if a file-read function slipped past
-    sql_safety, the DuckDB connection itself should refuse external IO."""
-    import duckdb as ddb
-    with pytest.raises(ddb.PermissionException):
-        db.execute("SELECT count(*) FROM read_csv_auto('/etc/hostname')").fetchone()
+def test_sql_safety_blocks_filesystem_readers_at_ast_level():
+    """Primary defense: sql_safety.validate_sql rejects every DuckDB
+    file-reader function at the AST level, before any SQL reaches the
+    DuckDB connection. We can no longer rely on a connection-level
+    `enable_external_access = false` lockdown — it's instance-scoped and
+    irreversible, which would block the JSONL ingestion needed by
+    user-uploaded sources."""
+    from sql_safety import validate_sql
+    for bad in (
+        "SELECT * FROM read_csv_auto('/etc/hostname')",
+        "SELECT * FROM read_text('/etc/hostname')",
+        "SELECT * FROM read_json_auto('/etc/passwd')",
+        "SELECT * FROM glob('/etc/*')",
+    ):
+        result = validate_sql(bad)
+        assert not result.ok, f"sql_safety should have rejected: {bad}"
 
 
 # ---------------------------------------------------------------------- pivot drift

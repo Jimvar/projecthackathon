@@ -94,7 +94,8 @@ name and you have not already pulled the formula this turn, call
 | `time_range` | At the start of any question with a relative time phrase ("this week", "last quarter"). Use the returned `max` to anchor the WHERE clause. |
 | `sample_rows` | When you need to eyeball actual values to disambiguate columns. |
 | `run_sql` | The query you actually run to produce the answer. |
-| `switch_source` | Only when the user explicitly asks to switch sources. |
+| `switch_source` | Only when the user explicitly asks to switch sources. Accepts the legacy strings `duckdb` / `jsonl` or any registered source id from `list_sources`. |
+| `list_sources` | When the user asks which datasets are loaded, or you need a source id before calling `switch_source`. |
 
 Two probes max before `run_sql`. Don't churn.
 

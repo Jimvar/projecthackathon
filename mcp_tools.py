@@ -278,14 +278,31 @@ def time_range(table: str, column: str = "start_time") -> dict[str, Any]:
 
 
 def switch_source(source: str) -> dict[str, Any]:
-    """Toggle between the DuckDB-native flat views and JSONL-derived views."""
-    source = (source or "").strip().lower()
+    """Switch the active data source by id (or legacy 'duckdb' / 'jsonl')."""
+    source = (source or "").strip()
     db = get_db()
     try:
         active = db.switch_source(source)
     except Exception as e:
         return {"error": str(e), "active_source": db.source}
     return {"active_source": active}
+
+
+def list_sources() -> dict[str, Any]:
+    """Enumerate the registered data sources (built-ins + user uploads)."""
+    db = get_db()
+    return {
+        "active_source": db.source,
+        "sources": [
+            {
+                "id": s.id,
+                "name": s.display_name,
+                "kind": s.kind,
+                "builtin": s.is_builtin,
+            }
+            for s in db.sources()
+        ],
+    }
 
 
 # ---------------------------------------------------------------------- internals
@@ -404,17 +421,34 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "switch_source": {
         "fn": switch_source,
         "description": (
-            "Switch the data source backing the canonical views. "
-            "`duckdb` uses the native flat views; `jsonl` uses views derived "
-            "from conversations.jsonl with the same column shape."
+            "Switch the data source backing v_conversations_active. Accepts "
+            "either the legacy strings 'duckdb' / 'jsonl' or a registered "
+            "source id (see list_sources). Call this only when the user "
+            "asks to switch sources."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "source": {"type": "string", "enum": ["duckdb", "jsonl"]},
+                "source": {
+                    "type": "string",
+                    "description": (
+                        "'duckdb', 'jsonl', or the id of an imported source "
+                        "(e.g. 'src_abc1234567')."
+                    ),
+                },
             },
             "required": ["source"],
         },
+    },
+    "list_sources": {
+        "fn": list_sources,
+        "description": (
+            "List every registered data source (the two built-ins plus any "
+            "user-imported uploads) and which one is currently active. Use "
+            "this only when the user asks 'which datasets are loaded?' or "
+            "to confirm an id before calling switch_source."
+        ),
+        "parameters": {"type": "object", "properties": {}},
     },
 }
 
