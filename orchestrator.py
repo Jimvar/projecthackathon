@@ -165,6 +165,12 @@ class Orchestrator:
         log = TurnLog(user_message=user_message)
 
         messages = self._build_messages(user_message, history or [])
+        # Capture every successful run_sql result so we can attach the
+        # rows the LLM literally saw onto each matching panel. The
+        # renderer prefers this over re-executing the SQL — same query,
+        # but eliminates the explanation-vs-chart divergence that
+        # happens when the contract's SQL differs from what the LLM ran.
+        run_sql_history: dict[str, dict] = {}
 
         for hop in range(MAX_TOOL_HOPS):
             resp = self.client.generate(messages)
@@ -213,9 +219,19 @@ class Orchestrator:
                     "response": result,
                 })
                 if tc.name == "run_sql" and isinstance(result, dict) and not result.get("error"):
-                    log.sql = result.get("sql", "")
+                    normalized = result.get("sql", "")
+                    log.sql = normalized
+                    if normalized:
+                        run_sql_history[normalized] = result
         else:
             log.error = f"tool-use loop exceeded {MAX_TOOL_HOPS} hops"
+
+        # Pair each contract panel with the run_sql result it came from.
+        # When the contract's SQL matches one the LLM ran, the panel
+        # carries the rows directly so the renderer doesn't re-execute;
+        # when it doesn't match, we flag the panel so the UI can warn
+        # the user that the chart's data may differ from the prose.
+        _attach_run_sql_data(log, run_sql_history)
 
         log.latency_ms = int((time.monotonic() - t_start) * 1000)
 
@@ -294,6 +310,37 @@ class Orchestrator:
 
 
 # ---------------------------------------------------------------------- helpers
+
+
+def _attach_run_sql_data(log: TurnLog, run_sql_history: dict[str, dict]) -> None:
+    """For each contract panel, attach the LLM's actual run_sql result
+    when the SQL strings match (after normalization). If the contract's
+    SQL doesn't match anything the LLM ran but it ran at least one
+    run_sql, mark the panel — that's the explanation-vs-chart divergence
+    the user sees as 'prose says 96 but the chart says 100'.
+
+    Idempotent and best-effort: panels with unvalidatable SQL are left
+    alone, and the renderer's existing fallback re-executes them.
+    """
+    if not log.panels or not run_sql_history:
+        return
+    from sql_safety import validate_sql  # local — avoids import cycle at startup
+
+    for panel in log.panels:
+        sql = (panel.get("sql") or "").strip()
+        if not sql:
+            continue
+        v = validate_sql(sql)
+        if not v.ok:
+            continue
+        if v.normalized_sql in run_sql_history:
+            res = run_sql_history[v.normalized_sql]
+            panel["_data"] = {
+                "rows": res.get("rows", []),
+                "columns": res.get("columns", []),
+            }
+        else:
+            panel["_sql_divergence"] = True
 
 
 _JSON_FENCE = re.compile(r"```(?:json|jsonc)?\s*(\{.*?\})\s*```", re.DOTALL)

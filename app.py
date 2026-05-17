@@ -363,6 +363,18 @@ def _prepare_panel_figures(turn: dict) -> list[tuple[str, object, str]]:
     dfs: list[pd.DataFrame] = []
     errs: list[str] = []
     for panel in panels:
+        # Prefer the rows the LLM actually saw when its tool-call SQL
+        # matched the contract's SQL — the orchestrator attaches them
+        # to panel["_data"]. This eliminates the redundant re-execute
+        # and the explanation-vs-chart divergence that can happen when
+        # two runs produce different totals.
+        data = panel.get("_data")
+        if data is not None:
+            dfs.append(
+                pd.DataFrame(data.get("rows", []), columns=data.get("columns", []))
+            )
+            errs.append("")
+            continue
         df, err = _df_from_sql(panel.get("sql", ""))
         dfs.append(df)
         errs.append(err or "")
@@ -428,10 +440,24 @@ def _lay_out_panels(turn: dict, panel_figs: list[tuple[str, object, str]]) -> No
 def _render_assistant_turn(turn: dict) -> None:
     if turn.get("error"):
         st.error(turn["error"])
+
+    panels = _normalize_panels(turn)
+    # Surface the explanation-vs-chart divergence when the contract's
+    # SQL didn't match anything the LLM ran. The chart was re-executed
+    # from a different query than the prose was written against, so the
+    # numbers can legitimately disagree.
+    diverged = [i + 1 for i, p in enumerate(panels) if p.get("_sql_divergence")]
+    if diverged:
+        which = ", ".join(str(i) for i in diverged)
+        st.warning(
+            f"Panel {which}: the chart's SQL doesn't match what the model "
+            "ran while writing its answer, so numbers in the prose and the "
+            "chart may not agree. Open **Show SQL** to compare."
+        )
+
     if turn.get("explanation"):
         st.markdown(turn["explanation"])
 
-    panels = _normalize_panels(turn)
     if panels:
         panel_figs = _prepare_panel_figures(turn)
         _lay_out_panels(turn, panel_figs)

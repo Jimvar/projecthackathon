@@ -83,6 +83,71 @@ def test_orchestrator_runs_tool_then_returns_contract():
     assert any(m["role"] == "tool" for m in second_round)
 
 
+def test_orchestrator_attaches_run_sql_data_to_matching_panel():
+    """When the contract's SQL matches what the LLM ran via run_sql,
+    the orchestrator attaches the actual rows + columns to the panel.
+    The renderer can then skip the redundant re-execute, killing the
+    explanation-vs-chart divergence the user reported as '96 in the
+    prose, 100 on the chart'."""
+    sql = "SELECT main_language, COUNT(*) AS n FROM v_conversations GROUP BY 1 ORDER BY 2 DESC"
+    contract = {
+        "sql": sql,
+        "chart": {"type": "pie", "x": "main_language", "y": "n", "title": "Languages"},
+        "explanation": "Greek dominates.",
+    }
+    script = _Script(
+        seen=[],
+        responses=[
+            LLMResponse(
+                text=None,
+                tool_calls=[ToolCall(name="run_sql", arguments={"query": sql})],
+                raw=None,
+            ),
+            LLMResponse(text=json.dumps(contract), tool_calls=[], raw=None),
+        ],
+    )
+    orch = Orchestrator(client=script, write_log=False)  # type: ignore[arg-type]
+    log = orch.run("languages")
+
+    assert log.panels, "expected a panel from the contract"
+    panel = log.panels[0]
+    assert "_data" in panel, f"expected attached data; got panel={panel!r}"
+    assert panel["_data"]["columns"] == ["main_language", "n"]
+    assert len(panel["_data"]["rows"]) == 2  # el, en
+    assert not panel.get("_sql_divergence")
+
+
+def test_orchestrator_flags_panel_when_contract_sql_diverges():
+    """If the LLM ran SQL A for its explanation but emitted SQL B in the
+    contract, the panel gets flagged so the UI can warn the user that
+    the prose and the chart may not agree."""
+    ran_sql = "SELECT COUNT(*) AS n FROM v_conversations WHERE main_language = 'el'"
+    contract_sql = "SELECT main_language, COUNT(*) AS n FROM v_conversations GROUP BY 1"
+    contract = {
+        "sql": contract_sql,
+        "chart": {"type": "bar", "x": "main_language", "y": "n", "title": "Languages"},
+        "explanation": "There were 5000 Greek calls.",
+    }
+    script = _Script(
+        seen=[],
+        responses=[
+            LLMResponse(
+                text=None,
+                tool_calls=[ToolCall(name="run_sql", arguments={"query": ran_sql})],
+                raw=None,
+            ),
+            LLMResponse(text=json.dumps(contract), tool_calls=[], raw=None),
+        ],
+    )
+    orch = Orchestrator(client=script, write_log=False)  # type: ignore[arg-type]
+    log = orch.run("how many Greek calls?")
+
+    assert log.panels
+    panel = log.panels[0]
+    assert panel.get("_sql_divergence") is True
+    assert "_data" not in panel
+
+
 def test_orchestrator_handles_fenced_json():
     sql = "SELECT COUNT(*) AS n FROM v_conversations"
     contract = {"sql": sql, "chart": {"type": "kpi", "y": "n", "title": "Total calls"}, "explanation": "10000 calls."}
