@@ -287,6 +287,42 @@ def test_unregister_builtin_rejected():
         db.unregister_source("builtin_duckdb")
 
 
+# ---------------------------------------------------------------------- MCP client round-trip
+
+
+def test_mcp_client_round_trips_a_tool_call():
+    """End-to-end smoke: spawn mcp_server.py as a subprocess, call
+    list_tables and run_sql through the stdio session, confirm the
+    payloads come back in the same shape as the in-process path.
+
+    This is the proof that the orchestrator's MCP-backed dispatcher
+    behaves identically to the in-process one (which is what makes the
+    `call_tool=` injection in app.py safe)."""
+    from mcp_client import MCPClient
+
+    client = MCPClient()
+    try:
+        tables = client.call_tool("list_tables", {})
+        assert "tables" in tables, tables
+        assert "v_conversations" in tables["tables"]
+
+        sql_result = client.call_tool(
+            "run_sql", {"query": "SELECT COUNT(*) AS n FROM v_conversations"}
+        )
+        assert "error" not in sql_result, sql_result
+        assert sql_result["rows"][0][0] == 10_000
+
+        sources = client.call_tool("list_sources", {})
+        ids = {s["id"] for s in sources["sources"]}
+        assert {"builtin_duckdb", "builtin_jsonl"}.issubset(ids)
+
+        # reload_sources is a real round-trip; should return {"reloaded": True}
+        reload = client.call_tool("reload_sources", {})
+        assert reload.get("reloaded") is True
+    finally:
+        client.close()
+
+
 # ---------------------------------------------------------------------- Phase 3 / rules
 
 def test_no_hardcoded_dispatch_in_source():

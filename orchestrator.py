@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import Any
 
 from llm_client import LLMClient, make_llm_client
-from mcp_tools import TOOL_REGISTRY, call_tool
+from mcp_tools import TOOL_REGISTRY
+from mcp_tools import call_tool as _in_process_call_tool
 from turn_log import log_turn
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "prompts" / "system.md"
@@ -96,9 +97,14 @@ def _tool_specs_for_gemini() -> list[dict]:
     ]
 
 
-def _auto_inject_metric_hint(user_message: str) -> str | None:
+def _auto_inject_metric_hint(user_message: str, call_tool) -> str | None:
     """If the user mentioned a known metric name, return the dictionary chunk
     to prepend as a hidden system note. Saves the LLM a tool round-trip.
+
+    `call_tool` is the same callable the orchestrator uses for LLM tool
+    dispatch — in-process by default, MCP-backed when the app wires it up.
+    Routing through it keeps the metric lookup consistent with the rest
+    of the tool surface.
 
     Note on the no-hardcoded-lookups rule:
     This is **not** a banned NL→answer dispatch. The user's question still
@@ -126,13 +132,24 @@ class Orchestrator:
     Holds an `LLMClient` configured with the project's system prompt + tools.
     """
 
-    def __init__(self, client: LLMClient | None = None, *, write_log: bool = True) -> None:
+    def __init__(
+        self,
+        client: LLMClient | None = None,
+        *,
+        call_tool=None,
+        write_log: bool = True,
+    ) -> None:
         # The factory picks gemini vs openai from LLM_PROVIDER env var.
         # Tests pass an explicit stub client; production passes nothing.
         self.client = client or make_llm_client(
             tools=_tool_specs_for_gemini(),
             system_instruction=_system_prompt(),
         )
+        # Tool dispatch is injectable. The Streamlit app wires up an MCP
+        # client; tests and the eval suite leave it None and get the
+        # in-process dispatcher, which is faster and doesn't spawn a
+        # subprocess.
+        self._call_tool = call_tool or _in_process_call_tool
         self.write_log = write_log
 
     # ------------------------------------------------------------------ turn
@@ -182,7 +199,7 @@ class Orchestrator:
                 break
 
             for tc in resp.tool_calls:
-                result = call_tool(tc.name, tc.arguments)
+                result = self._call_tool(tc.name, tc.arguments)
                 log.tool_calls.append(
                     {"name": tc.name, "arguments": tc.arguments, "result_keys": _keys_only(result)}
                 )
@@ -249,7 +266,7 @@ class Orchestrator:
                     "explanation": h.get("explanation", ""),
                 }
                 msgs.append({"role": "model", "text": json.dumps(contract)})
-        hint = _auto_inject_metric_hint(user_message)
+        hint = _auto_inject_metric_hint(user_message, self._call_tool)
         text = user_message
         if hint:
             text = f"{user_message}\n\n[system note] {hint}"

@@ -305,6 +305,20 @@ def list_sources() -> dict[str, Any]:
     }
 
 
+def reload_sources() -> dict[str, Any]:
+    """Drop the live DuckDB connection so the next tool call rebuilds
+    from data/uploads/manifest.json.
+
+    The Streamlit app calls this over MCP after `register_source` or
+    `unregister_source` so the server's DB picks up the new manifest
+    state. The manifest itself is the shared truth between processes;
+    this just nudges the server to re-read it.
+    """
+    db = get_db()
+    db.close()
+    return {"reloaded": True}
+
+
 # ---------------------------------------------------------------------- internals
 
 
@@ -447,6 +461,16 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "user-imported uploads) and which one is currently active. Use "
             "this only when the user asks 'which datasets are loaded?' or "
             "to confirm an id before calling switch_source."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+    "reload_sources": {
+        "fn": reload_sources,
+        "description": (
+            "Drop the server's live DuckDB connection so the next tool call "
+            "rebuilds from data/uploads/manifest.json. The app uses this to "
+            "tell the MCP server about new or removed uploads; the LLM "
+            "should not call it on its own."
         ),
         "parameters": {"type": "object", "properties": {}},
     },
